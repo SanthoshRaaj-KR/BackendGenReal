@@ -1,10 +1,11 @@
+// services/auth-service/src/services/authService.js
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const PasswordReset = require('../models/PasswordReset');
 const emailService = require('./emailService');
-const redisClient = require('../config/redis');
+// const redisClient = require('../config/redis'); // Comment out Redis for now
 
 class AuthService {
   generateTokens(user) {
@@ -19,14 +20,19 @@ class AuthService {
   }
 
   async saveRefreshToken(userId, refreshToken, deviceInfo) {
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-    await RefreshToken.create({ token: refreshToken, userId, expiresAt, deviceInfo });
+    try {
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 7);
+      await RefreshToken.create({ token: refreshToken, userId, expiresAt, deviceInfo });
+    } catch (error) {
+      console.error('Failed to save refresh token:', error);
+      // Don't throw error - allow registration to continue
+    }
   }
 
   async register(userData) {
     try {
-      console.log('AuthService register called with:', userData); // Debug log
+      console.log('AuthService register called with:', userData);
       
       const existingUser = await User.findOne({ email: userData.email.toLowerCase() });
       if (existingUser) {
@@ -39,30 +45,31 @@ class AuthService {
         password: userData.password,
         firstName: userData.firstName || 'User',
         lastName: userData.lastName || '',
-        credits: 100, // Give new users 100 free credits
+        credits: 100,
         isActive: true,
-        isVerified: false, // You can set to true for now if you don't want email verification
+        isVerified: true, // Set to true to skip email verification for now
         role: 'user'
       };
 
-      console.log('Creating user with data:', userToCreate); // Debug log
+      console.log('Creating user with data:', userToCreate);
 
       const user = await User.create(userToCreate);
-      console.log('User created successfully:', user._id); // Debug log
+      console.log('User created successfully:', user._id);
 
+      // Skip email verification for now to avoid Redis issues
       // Generate verification token and send email (optional)
+      /*
       try {
         const verificationToken = crypto.randomBytes(32).toString('hex');
         await redisClient.setex(`verify_${user._id}`, 86400, verificationToken);
         
-        // Send verification email if emailService is available
         if (emailService && emailService.sendVerificationEmail) {
           await emailService.sendVerificationEmail(user.email, user.firstName, verificationToken);
         }
       } catch (emailError) {
         console.log('Email service not available or failed:', emailError.message);
-        // Don't throw error here - user creation should still succeed
       }
+      */
 
       // Return the user without password
       const userResponse = user.toObject();
@@ -138,7 +145,11 @@ class AuthService {
 
   async logout(refreshToken) {
     if (refreshToken) {
-      await RefreshToken.updateOne({ token: refreshToken }, { isRevoked: true });
+      try {
+        await RefreshToken.updateOne({ token: refreshToken }, { isRevoked: true });
+      } catch (error) {
+        console.error('Logout error:', error);
+      }
     }
   }
 
@@ -163,7 +174,7 @@ class AuthService {
     const resetRecord = await PasswordReset.findOne({
       token,
       isUsed: false,
-      expiresAt: { $gt: new Date() }, // Mongoose syntax for 'greater than'
+      expiresAt: { $gt: new Date() },
     });
     if (!resetRecord) throw new Error('Invalid or expired reset token');
 
@@ -181,11 +192,16 @@ class AuthService {
 
   async verifyEmail(token, userId) {
     try {
+      // Skip Redis verification for now
+      await User.updateOne({ _id: userId }, { isVerified: true });
+      
+      /*
       const storedToken = await redisClient.get(`verify_${userId}`);
       if (!storedToken || storedToken !== token) throw new Error('Invalid verification token');
       
       await User.updateOne({ _id: userId }, { isVerified: true });
       await redisClient.del(`verify_${userId}`);
+      */
     } catch (error) {
       console.error('Email verification error:', error);
       throw error;

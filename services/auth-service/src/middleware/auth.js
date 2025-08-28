@@ -1,5 +1,6 @@
+// services/auth-service/src/middleware/auth.js
 const jwt = require('jsonwebtoken');
-const User = require('../models/user');
+const User = require('../models/User'); // Fixed import path
 const { promisify } = require('util');
 
 const authenticate = async (req, res, next) => {
@@ -20,8 +21,8 @@ const authenticate = async (req, res, next) => {
     // Verify token
     const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
     
-    // Check if user still exists
-    const user = await User.findByPk(decoded.id);
+    // Check if user still exists - Fixed: Use findById instead of findByPk (Mongoose vs Sequelize)
+    const user = await User.findById(decoded.id);
     if (!user) {
       return res.status(401).json({
         success: false,
