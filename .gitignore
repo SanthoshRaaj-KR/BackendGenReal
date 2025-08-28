@@ -1,0 +1,47 @@
+# Dependencies
+node_modules
+/.pnp
+.pnp.js
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage and test output
+/coverage
+/.nyc_output
+/test-output
+
+# Env files (never push your secrets)
+.env
+.env.local
+.env.*.local
+
+# Build output
+/dist
+/build
+/.cache
+
+# IDE trash
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# OS trash
+.DS_Store
+Thumbs.db
+
+# Misc
+*.tgz
