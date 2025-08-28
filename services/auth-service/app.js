@@ -3,11 +3,14 @@ const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
+const mongoose = require('mongoose'); // Added for graceful shutdown
 require('dotenv').config();
+
+// Import Passport configuration
+const passport = require('./src/config/passport');
 
 const securityMiddleware = require('./src/middleware/security');
 const authRoutes = require('./src/routes/authRoutes');
-
 const connectDB = require('./src/config/database');
 
 const app = express();
@@ -29,6 +32,10 @@ app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// Initialize Passport middleware
+app.use(passport.initialize());
+
 app.use(securityMiddleware);
 
 app.get('/health', (req, res) => {
@@ -79,15 +86,14 @@ app.use((err, req, res, next) => {
   });
 });
 
-
 const startServer = async () => {
   try {
-
     await connectDB();
 
     app.listen(PORT, () => {
       console.log(`Auth service running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`Google OAuth configured: ${process.env.GOOGLE_CLIENT_ID ? 'Yes' : 'No'}`);
     });
   } catch (error) {
     console.error('Unable to start server:', error);
