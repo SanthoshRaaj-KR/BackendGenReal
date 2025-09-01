@@ -67,6 +67,54 @@ class EmailService {
 
     await this.transporter.sendMail(mailOptions);
   }
+
+  async sendOTPEmail(email, firstName, otp) {
+    const mailOptions = {
+      from: process.env.FROM_EMAIL,
+      to: email,
+      subject: 'Password Reset OTP - Deepfake Detection Platform',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f8f9fa; padding: 20px; border-radius: 10px;">
+          <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 30px;">
+              <h1 style="color: #333; margin: 0; font-size: 24px;">Password Reset OTP</h1>
+            </div>
+            
+            <p style="color: #555; font-size: 16px; line-height: 1.6;">Hi ${firstName},</p>
+            <p style="color: #555; font-size: 16px; line-height: 1.6;">
+              You requested to reset your password. Use the OTP below to continue:
+            </p>
+            
+            <div style="text-align: center; margin: 30px 0; padding: 20px; background: #f8f9ff; border: 2px dashed #6366f1; border-radius: 8px;">
+              <h2 style="color: #6366f1; font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 8px; font-family: 'Courier New', monospace;">
+                ${otp}
+              </h2>
+            </div>
+            
+            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px; padding: 15px; margin: 20px 0;">
+              <p style="margin: 0; color: #856404; font-size: 14px;">
+                <strong>⏰ This OTP will expire in 5 minutes.</strong><br>
+                <strong>🔒 Maximum 3 attempts allowed.</strong>
+              </p>
+            </div>
+            
+            <p style="color: #555; font-size: 14px; line-height: 1.6;">
+              If you didn't request this password reset, please ignore this email or contact support if you have concerns.
+            </p>
+            
+            <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 20px; text-align: center;">
+              <p style="color: #888; font-size: 12px; margin: 0;">
+                Deepfake Detection Platform - Secure Authentication System
+              </p>
+            </div>
+          </div>
+        </div>
+      `,
+    };
+
+    await this.transporter.sendMail(mailOptions);
+  }
+
 }
 
 module.exports = new EmailService();

@@ -242,6 +242,90 @@ class AuthController {
     }
   }
 
+  async sendPasswordResetOTP(req, res) {
+    try {
+      const { email } = req.body;
+      
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email is required',
+        });
+      }
+
+      const result = await authService.sendPasswordResetOTP(email);
+      
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      console.error('Send OTP error:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to send OTP',
+      });
+    }
+  }
+
+  async verifyPasswordResetOTP(req, res) {
+    try {
+      const { email, otp } = req.body;
+      
+      if (!email || !otp) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email and OTP are required',
+        });
+      }
+
+      const result = await authService.verifyPasswordResetOTP(email, otp);
+      
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      console.error('Verify OTP error:', error);
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  async resetPasswordWithOTP(req, res) {
+    try {
+      const { email, otp, password } = req.body;
+      
+      if (!email || !otp || !password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email, OTP, and new password are required',
+        });
+      }
+
+      if (password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password must be at least 6 characters long',
+        });
+      }
+
+      const result = await authService.resetPasswordWithOTP(email, otp, password);
+      
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      console.error('Reset password with OTP error:', error);
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
   async resetPassword(req, res) {
     try {
       const { token, password } = req.body;

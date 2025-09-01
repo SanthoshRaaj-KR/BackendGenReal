@@ -2,8 +2,15 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const emailService = require('./emailService');
+const OTPReset = require('../models/OTPReset');
+const RefreshToken = require('../models/RefreshToken');
 
 class AuthService {
+
+  generateOTP() {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
   generateTokens(user) {
     const payload = { 
       id: user._id, 
@@ -184,6 +191,103 @@ class AuthService {
     await user.save();
   }
 
+  async sendPasswordResetOTP(email) {
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user) {
+    // Don't reveal if email doesn't exist for security
+    return { success: true, message: 'If an account exists, OTP has been sent' };
+  }
+
+  // Clean up any existing OTP requests for this email
+  await OTPReset.deleteMany({ email: email.toLowerCase() });
+
+  // Generate new OTP
+  const otp = this.generateOTP();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+  // Save OTP to database
+  await OTPReset.create({
+    email: email.toLowerCase(),
+    otp,
+    expiresAt,
+  });
+
+  // Send OTP email
+  try {
+    if (emailService && emailService.sendOTPEmail) {
+      await emailService.sendOTPEmail(email, user.firstName, otp);
+    }
+  } catch (emailError) {
+    console.error('Failed to send OTP email:', emailError);
+    throw new Error('Failed to send OTP. Please try again.');
+  }
+
+  return { success: true, message: 'OTP sent to your email address' };
+}
+
+// Verify OTP
+async verifyPasswordResetOTP(email, otp) {
+  const otpRecord = await OTPReset.findOne({
+    email: email.toLowerCase(),
+    isUsed: false,
+    expiresAt: { $gt: new Date() },
+  });
+
+  if (!otpRecord) {
+    throw new Error('Invalid or expired OTP');
+  }
+
+  // Check attempts (max 3 attempts)
+  if (otpRecord.attempts >= 3) {
+    throw new Error('Too many invalid attempts. Please request a new OTP.');
+  }
+
+  if (otpRecord.otp !== otp) {
+    // Increment attempts
+    otpRecord.attempts += 1;
+    await otpRecord.save();
+    throw new Error(`Invalid OTP. ${3 - otpRecord.attempts} attempts remaining.`);
+  }
+
+  // Mark OTP as verified but not used (for the next step)
+  otpRecord.isVerified = true;
+  await otpRecord.save();
+
+  return { success: true, message: 'OTP verified successfully' };
+}
+
+// Reset password with verified OTP
+  async resetPasswordWithOTP(email, otp, newPassword) {
+    const otpRecord = await OTPReset.findOne({
+      email: email.toLowerCase(),
+      otp,
+      isVerified: true,
+      isUsed: false,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!otpRecord) {
+      throw new Error('Invalid OTP or session expired. Please start over.');
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Update password
+    user.password = newPassword;
+    await user.save();
+
+    // Mark OTP as used
+    otpRecord.isUsed = true;
+    await otpRecord.save();
+
+    // Revoke all existing refresh tokens for security
+    await RefreshToken.updateMany({ userId: user._id }, { isRevoked: true });
+
+    return { success: true, message: 'Password reset successfully' };
+  }
   async verifyEmail(token, userId) {
     try {
       // Simple verification - just mark as verified

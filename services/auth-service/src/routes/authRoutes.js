@@ -70,6 +70,10 @@ router.get('/credits', authenticate, authController.getCredits);
 // Deduct credits (called after successful analysis)
 router.post('/deduct-credits', authenticate, authController.deductCredits);
 
+router.post('/send-password-reset-otp', authLimiter, authController.sendPasswordResetOTP);
+router.post('/verify-password-reset-otp', authLimiter, authController.verifyPasswordResetOTP);
+router.post('/reset-password-with-otp', authLimiter, authController.resetPasswordWithOTP);
+
 // Validate token endpoint (useful for frontend to check if token is still valid)
 router.get('/validate', authenticate, (req, res) => {
   res.json({
