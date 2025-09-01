@@ -1,33 +1,22 @@
-// services/auth-service/src/services/authService.js
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
-const RefreshToken = require('../models/RefreshToken');
-const PasswordReset = require('../models/PasswordReset');
 const emailService = require('./emailService');
-// const redisClient = require('../config/redis'); // Comment out Redis for now
 
 class AuthService {
   generateTokens(user) {
-    const payload = { id: user._id, email: user.email, role: user.role };
+    const payload = { 
+      id: user._id, 
+      email: user.email, 
+      role: user.role,
+      isVerified: user.isVerified 
+    };
+    
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || '15m',
+      expiresIn: process.env.JWT_EXPIRES_IN || '1h', // Increased from 15m to 1h for better UX
     });
-    const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
-    });
-    return { accessToken, refreshToken };
-  }
-
-  async saveRefreshToken(userId, refreshToken, deviceInfo) {
-    try {
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
-      await RefreshToken.create({ token: refreshToken, userId, expiresAt, deviceInfo });
-    } catch (error) {
-      console.error('Failed to save refresh token:', error);
-      // Don't throw error - allow registration to continue
-    }
+    
+    return { accessToken };
   }
 
   async register(userData) {
@@ -39,7 +28,6 @@ class AuthService {
         throw new Error('User already exists with this email');
       }
 
-      // Ensure we have the required fields and add defaults
       const userToCreate = {
         email: userData.email.toLowerCase(),
         password: userData.password,
@@ -47,7 +35,7 @@ class AuthService {
         lastName: userData.lastName || '',
         credits: 100,
         isActive: true,
-        isVerified: true, // Set to true to skip email verification for now
+        isVerified: true, // Auto-verify for simplicity
         role: 'user'
       };
 
@@ -55,21 +43,6 @@ class AuthService {
 
       const user = await User.create(userToCreate);
       console.log('User created successfully:', user._id);
-
-      // Skip email verification for now to avoid Redis issues
-      // Generate verification token and send email (optional)
-      /*
-      try {
-        const verificationToken = crypto.randomBytes(32).toString('hex');
-        await redisClient.setex(`verify_${user._id}`, 86400, verificationToken);
-        
-        if (emailService && emailService.sendVerificationEmail) {
-          await emailService.sendVerificationEmail(user.email, user.firstName, verificationToken);
-        }
-      } catch (emailError) {
-        console.log('Email service not available or failed:', emailError.message);
-      }
-      */
 
       // Return the user without password
       const userResponse = user.toObject();
@@ -82,38 +55,38 @@ class AuthService {
     }
   }
 
-  async login(email, password, deviceInfo) {
-    // Manually select password since it's excluded by default
+  async login(email, password, deviceInfo = {}) {
+    // Find user and include password for comparison
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) throw new Error('Invalid credentials');
 
+    // Check if account is locked
     if (user.isLocked && user.isLocked()) {
       throw new Error('Account is temporarily locked. Please try again later.');
     }
 
+    // Verify password
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       user.loginAttempts = (user.loginAttempts || 0) + 1;
       if (user.loginAttempts >= 5) {
-        user.lockUntil = new Date(Date.now() + 30 * 60 * 1000);
+        user.lockUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
       }
       await user.save();
       throw new Error('Invalid credentials');
     }
 
+    // Reset login attempts and update last login
     user.loginAttempts = 0;
     user.lockUntil = null;
     user.lastLogin = new Date();
+
+    // Generate and store refresh token
+    const refreshToken = user.createRefreshToken(deviceInfo);
     await user.save();
 
-    const { accessToken, refreshToken } = this.generateTokens(user);
-    
-    try {
-      await this.saveRefreshToken(user._id, refreshToken, deviceInfo);
-    } catch (refreshTokenError) {
-      console.log('Failed to save refresh token:', refreshTokenError.message);
-      // Continue without refresh token if there's an issue
-    }
+    // Generate access token
+    const { accessToken } = this.generateTokens(user);
 
     // Return user without password
     const userResponse = user.toObject();
@@ -124,20 +97,24 @@ class AuthService {
 
   async refreshToken(token) {
     try {
-      const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-      const tokenRecord = await RefreshToken.findOne({ token, isRevoked: false });
-      if (!tokenRecord) throw new Error('Invalid refresh token');
+      // Find user with this refresh token
+      const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+      const user = await User.findOne({
+        refreshToken: hashedToken,
+        refreshTokenExpires: { $gt: Date.now() },
+        isActive: true,
+      });
 
-      const user = await User.findById(decoded.id);
-      if (!user || !user.isActive) throw new Error('User not found or inactive');
+      if (!user) {
+        throw new Error('Invalid or expired refresh token');
+      }
 
-      const tokens = this.generateTokens(user);
-      
-      tokenRecord.isRevoked = true;
-      await tokenRecord.save();
-      
-      await this.saveRefreshToken(user._id, tokens.refreshToken, tokenRecord.deviceInfo);
-      return tokens;
+      // Generate new tokens
+      const { accessToken } = this.generateTokens(user);
+      const newRefreshToken = user.createRefreshToken(user.deviceInfo);
+      await user.save();
+
+      return { accessToken, refreshToken: newRefreshToken };
     } catch (error) {
       throw new Error('Invalid refresh token');
     }
@@ -146,7 +123,12 @@ class AuthService {
   async logout(refreshToken) {
     if (refreshToken) {
       try {
-        await RefreshToken.updateOne({ token: refreshToken }, { isRevoked: true });
+        const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+        const user = await User.findOne({ refreshToken: hashedToken });
+        if (user) {
+          user.clearRefreshToken();
+          await user.save();
+        }
       } catch (error) {
         console.error('Logout error:', error);
       }
@@ -155,11 +137,14 @@ class AuthService {
 
   async forgotPassword(email) {
     const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return;
+    if (!user) {
+      // Don't reveal if email exists - security best practice
+      return;
+    }
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await PasswordReset.create({ email: email.toLowerCase(), token: resetToken, expiresAt });
+    // Generate reset token
+    const resetToken = user.createPasswordResetToken();
+    await user.save();
     
     try {
       if (emailService && emailService.sendPasswordResetEmail) {
@@ -167,62 +152,67 @@ class AuthService {
       }
     } catch (emailError) {
       console.log('Failed to send password reset email:', emailError.message);
+      // Clear the reset token if email fails
+      user.passwordResetToken = null;
+      user.passwordResetExpires = null;
+      await user.save();
+      throw new Error('Failed to send reset email');
     }
   }
 
   async resetPassword(token, newPassword) {
-    const resetRecord = await PasswordReset.findOne({
-      token,
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
-    });
-    if (!resetRecord) throw new Error('Invalid or expired reset token');
-
-    const user = await User.findOne({ email: resetRecord.email });
-    if (!user) throw new Error('User not found');
-
-    user.password = newPassword;
-    await user.save();
+    // Hash the token to compare with stored hashed version
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
     
-    resetRecord.isUsed = true;
-    await resetRecord.save();
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    }).select('+password');
 
-    await RefreshToken.updateMany({ userId: user._id }, { isRevoked: true });
+    if (!user) {
+      throw new Error('Invalid or expired reset token');
+    }
+
+    // Set new password (will be hashed by pre-save middleware)
+    user.password = newPassword;
+    user.passwordResetToken = null;
+    user.passwordResetExpires = null;
+    
+    // Clear all refresh tokens for security
+    user.clearRefreshToken();
+    
+    await user.save();
   }
 
   async verifyEmail(token, userId) {
     try {
-      // Skip Redis verification for now
-      await User.updateOne({ _id: userId }, { isVerified: true });
-      
-      /*
-      const storedToken = await redisClient.get(`verify_${userId}`);
-      if (!storedToken || storedToken !== token) throw new Error('Invalid verification token');
-      
-      await User.updateOne({ _id: userId }, { isVerified: true });
-      await redisClient.del(`verify_${userId}`);
-      */
+      // Simple verification - just mark as verified
+      const user = await User.findByIdAndUpdate(userId, { isVerified: true }, { new: true });
+      if (!user) {
+        throw new Error('User not found');
+      }
+      return user;
     } catch (error) {
       console.error('Email verification error:', error);
       throw error;
     }
   }
 
-  // New method to register and automatically generate tokens (for frontend auto-login)
-  async registerAndLogin(userData, deviceInfo = null) {
+  // Register and automatically log in
+  async registerAndLogin(userData, deviceInfo = {}) {
     try {
       // Create the user
       const user = await this.register(userData);
       
       // Generate tokens for immediate login
-      const { accessToken, refreshToken } = this.generateTokens(user);
+      const { accessToken } = this.generateTokens(user);
       
-      // Save refresh token if possible
-      try {
-        await this.saveRefreshToken(user._id, refreshToken, deviceInfo);
-      } catch (refreshTokenError) {
-        console.log('Failed to save refresh token during registration:', refreshTokenError.message);
-      }
+      // Generate and save refresh token
+      const refreshToken = await User.findById(user._id).then(foundUser => {
+        const token = foundUser.createRefreshToken(deviceInfo);
+        foundUser.lastLogin = new Date();
+        return foundUser.save().then(() => token);
+      });
 
       return { 
         user, 
@@ -231,6 +221,22 @@ class AuthService {
       };
     } catch (error) {
       throw error;
+    }
+  }
+
+  // Verify JWT token (for middleware)
+  async verifyToken(token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id);
+      
+      if (!user || !user.isActive) {
+        throw new Error('User not found or inactive');
+      }
+
+      return user;
+    } catch (error) {
+      throw new Error('Invalid token');
     }
   }
 }

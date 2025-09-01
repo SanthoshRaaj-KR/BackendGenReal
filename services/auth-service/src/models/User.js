@@ -1,13 +1,14 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 const UserSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'Please provide an email'],
     unique: true,
-    lowercase: true, // Automatically convert to lowercase
-    trim: true, // Remove whitespace
+    lowercase: true,
+    trim: true,
     match: [
       /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
       'Please provide a valid email',
@@ -15,9 +16,8 @@ const UserSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    // Required is a function to allow null for OAuth users
     required: function() { return !this.googleId; },
-    minlength: [6, 'Password must be at least 6 characters long'], // Changed from 8 to 6 to match frontend
+    minlength: [6, 'Password must be at least 6 characters long'],
     select: false, // Don't send password back in queries by default
   },
   firstName: {
@@ -27,9 +27,9 @@ const UserSchema = new mongoose.Schema({
   },
   lastName: {
     type: String,
-    required: false, // Changed to false since your frontend allows empty last names
+    required: false,
     trim: true,
-    default: '', // Default to empty string
+    default: '',
   },
   role: {
     type: String,
@@ -38,7 +38,7 @@ const UserSchema = new mongoose.Schema({
   },
   isVerified: {
     type: Boolean,
-    default: false,
+    default: true, // Set to true by default since we're not using email verification for now
   },
   isActive: {
     type: Boolean,
@@ -53,10 +53,7 @@ const UserSchema = new mongoose.Schema({
   googleId: {
     type: String,
     unique: true,
-    sparse: true, // Allows multiple null values for non-Google users
-  },
-  twoFactorSecret: {
-    type: String,
+    sparse: true,
   },
   twoFactorEnabled: {
     type: Boolean,
@@ -69,10 +66,10 @@ const UserSchema = new mongoose.Schema({
   lockUntil: {
     type: Date,
   },
-  // ✅ NEW FIELDS FOR CREDITS SYSTEM
+  // Credits system
   credits: {
     type: Number,
-    default: 100, // Give new users 100 free credits
+    default: 100,
     min: [0, 'Credits cannot be negative'],
   },
   totalCreditsUsed: {
@@ -84,7 +81,7 @@ const UserSchema = new mongoose.Schema({
     enum: ['free', 'basic', 'premium', 'enterprise'],
     default: 'free',
   },
-  // ✅ ANALYTICS FIELDS FOR DASHBOARD
+  // Analytics fields
   analysesPerformed: {
     type: Number,
     default: 0,
@@ -97,25 +94,40 @@ const UserSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  subscription: {
-    stripeCustomerId: String,
-    stripeSubscriptionId: String,
-    status: {
-      type: String,
-      enum: ['active', 'canceled', 'past_due', 'incomplete'],
-    },
-    currentPeriodEnd: Date,
+  // Password reset fields (embedded in user document)
+  passwordResetToken: {
+    type: String,
+    default: null,
+  },
+  passwordResetExpires: {
+    type: Date,
+    default: null,
+  },
+  // Refresh token fields (embedded in user document)
+  refreshToken: {
+    type: String,
+    default: null,
+  },
+  refreshTokenExpires: {
+    type: Date,
+    default: null,
+  },
+  deviceInfo: {
+    userAgent: String,
+    ip: String,
+    lastUsed: Date,
   },
 }, {
-  timestamps: true, // Adds createdAt and updatedAt fields
+  timestamps: true,
 });
 
-// Index for better performance
+// Indexes for performance
 UserSchema.index({ email: 1 });
 UserSchema.index({ googleId: 1 });
-UserSchema.index({ createdAt: -1 });
+UserSchema.index({ passwordResetToken: 1 });
+UserSchema.index({ refreshToken: 1 });
 
-// Mongoose pre-save middleware for hashing password
+// Hash password before saving
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password') || !this.password) {
     return next();
@@ -125,18 +137,59 @@ UserSchema.pre('save', async function(next) {
   next();
 });
 
-// Mongoose method to compare passwords
+// Compare password method
 UserSchema.methods.comparePassword = async function(candidatePassword) {
   if (!this.password) return false;
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// Mongoose virtual or method to check if locked
+// Check if account is locked
 UserSchema.methods.isLocked = function() {
   return !!(this.lockUntil && this.lockUntil > Date.now());
 };
 
-// ✅ NEW METHODS FOR CREDITS MANAGEMENT
+// Generate password reset token
+UserSchema.methods.createPasswordResetToken = function() {
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  
+  // Hash the token and set it on the user
+  this.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  this.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  
+  return resetToken; // Return the unhashed token to send via email
+};
+
+// Generate refresh token
+UserSchema.methods.createRefreshToken = function(deviceInfo = {}) {
+  const refreshToken = crypto.randomBytes(64).toString('hex');
+  
+  this.refreshToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
+  this.refreshTokenExpires = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+  this.deviceInfo = {
+    ...deviceInfo,
+    lastUsed: new Date(),
+  };
+  
+  return refreshToken; // Return the unhashed token
+};
+
+// Validate refresh token
+UserSchema.methods.validateRefreshToken = function(candidateToken) {
+  if (!this.refreshToken || !this.refreshTokenExpires) return false;
+  if (Date.now() > this.refreshTokenExpires) return false;
+  
+  const hashedCandidate = crypto.createHash('sha256').update(candidateToken).digest('hex');
+  return this.refreshToken === hashedCandidate;
+};
+
+// Clear refresh token
+UserSchema.methods.clearRefreshToken = function() {
+  this.refreshToken = null;
+  this.refreshTokenExpires = null;
+  this.deviceInfo = {};
+};
+
+// Credits management methods
 UserSchema.methods.deductCredits = function(amount) {
   if (this.credits >= amount) {
     this.credits -= amount;
@@ -155,8 +208,8 @@ UserSchema.methods.hasEnoughCredits = function(amount) {
   return this.credits >= amount;
 };
 
-// ✅ METHOD TO UPDATE ANALYSIS STATS
-UserSchema.methods.recordAnalysis = function(result, creditsUsed = 0) {
+// Record analysis method
+UserSchema.methods.recordAnalysis = function(result, creditsUsed = 1) {
   this.analysesPerformed += 1;
   this.deductCredits(creditsUsed);
   
@@ -169,31 +222,18 @@ UserSchema.methods.recordAnalysis = function(result, creditsUsed = 0) {
   return this.save();
 };
 
-// ✅ VIRTUAL FOR FULL NAME
+// Virtual for full name
 UserSchema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`.trim();
 });
 
-// ✅ VIRTUAL FOR REMAINING CREDITS PERCENTAGE
-UserSchema.virtual('creditUsagePercentage').get(function() {
-  const totalEverHad = this.credits + this.totalCreditsUsed;
-  if (totalEverHad === 0) return 0;
-  return Math.round((this.totalCreditsUsed / totalEverHad) * 100);
-});
-
-// ✅ VIRTUAL FOR AVERAGE CONFIDENCE (you can implement this based on your analysis storage)
-UserSchema.virtual('averageConfidence').get(function() {
-  // This is a placeholder - you might want to calculate this from your analysis records
-  return 85.7; // Default value for now
-});
-
-// ✅ METHOD TO GET DASHBOARD STATS
+// Get dashboard stats
 UserSchema.methods.getDashboardStats = function() {
   return {
     totalAnalyses: this.analysesPerformed,
     authenticContent: this.authenticResults,
     suspiciousContent: this.suspiciousResults,
-    averageConfidence: this.averageConfidence || 85.7,
+    averageConfidence: 85.7, // You can calculate this based on your analysis records
     credits: {
       total: this.credits + this.totalCreditsUsed,
       used: this.totalCreditsUsed,
@@ -206,4 +246,4 @@ UserSchema.methods.getDashboardStats = function() {
 UserSchema.set('toJSON', { virtuals: true });
 UserSchema.set('toObject', { virtuals: true });
 
-module.exports = mongoose.models.User || mongoose.model('User', UserSchema);
+module.exports = mongoose.model('User', UserSchema);
