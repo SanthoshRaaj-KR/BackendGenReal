@@ -3,7 +3,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const mongoose = require('mongoose'); // Added for graceful shutdown
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 // Import Passport configuration

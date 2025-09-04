@@ -36,6 +36,7 @@
     "redis": "^4.6.10",
     "sequelize": "^6.35.0",
     "speakeasy": "^2.0.0",
+    "winston": "^3.17.0",
     "xss": "^1.0.14"
   },
   "devDependencies": {
@@ -44,7 +45,7 @@
     "nodemon": "^3.0.2",
     "supertest": "^6.3.3"
   },
-    "keywords": [
+  "keywords": [
     "express",
     "authentication",
     "oauth",
