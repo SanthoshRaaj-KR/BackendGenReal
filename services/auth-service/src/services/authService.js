@@ -20,7 +20,7 @@ class AuthService {
     };
     
     const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || '1h', // Increased from 15m to 1h for better UX
+      expiresIn: process.env.JWT_EXPIRES_IN || '1h',
     });
     
     return { accessToken };
