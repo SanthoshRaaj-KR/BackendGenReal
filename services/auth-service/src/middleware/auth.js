@@ -1,7 +1,5 @@
-// services/auth-service/src/middleware/auth.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const authService = require('../services/authService');
 
 /**
  * Main authentication middleware
@@ -15,7 +13,7 @@ const authenticate = async (req, res, next) => {
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
-    // Alternative: Check for token in cookies (if you're using cookie-based auth)
+    // Alternative: Check for token in cookies
     else if (req.cookies && req.cookies.authToken) {
       token = req.cookies.authToken;
     }
@@ -28,8 +26,19 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Verify the token and get user
-    const user = await authService.verifyToken(token);
+    // Verify the token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Get user from database
+    const user = await User.findById(decoded.id);
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found. Please log in again.',
+        code: 'USER_NOT_FOUND'
+      });
+    }
     
     // Check if user account is active
     if (!user.isActive) {
@@ -37,15 +46,6 @@ const authenticate = async (req, res, next) => {
         success: false,
         message: 'Account is deactivated',
         code: 'ACCOUNT_DEACTIVATED'
-      });
-    }
-
-    // Check if user is verified (optional - you can remove this if not needed)
-    if (!user.isVerified) {
-      return res.status(403).json({
-        success: false,
-        message: 'Please verify your email address',
-        code: 'EMAIL_NOT_VERIFIED'
       });
     }
 
@@ -81,7 +81,6 @@ const authenticate = async (req, res, next) => {
 
 /**
  * Authorization middleware for role-based access control
- * Usage: authorize('admin', 'premium_user')
  */
 const authorize = (...roles) => {
   return (req, res, next) => {
@@ -109,7 +108,6 @@ const authorize = (...roles) => {
 
 /**
  * Credit-based access control
- * Checks if user has enough credits for the operation
  */
 const requireCredits = (requiredCredits = 1) => {
   return async (req, res, next) => {
@@ -131,7 +129,6 @@ const requireCredits = (requiredCredits = 1) => {
       });
     }
 
-    // Store required credits in req for later deduction
     req.requiredCredits = requiredCredits;
     next();
   };
@@ -139,7 +136,6 @@ const requireCredits = (requiredCredits = 1) => {
 
 /**
  * Optional authentication - doesn't fail if no token provided
- * Useful for routes that work for both authenticated and unauthenticated users
  */
 const optionalAuth = async (req, res, next) => {
   try {
@@ -153,19 +149,18 @@ const optionalAuth = async (req, res, next) => {
 
     if (token) {
       try {
-        const user = await authService.verifyToken(token);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.id);
         if (user && user.isActive) {
           req.user = user;
         }
       } catch (error) {
-        // Token is invalid but we don't fail the request
         console.log('Optional auth failed:', error.message);
       }
     }
 
     next();
   } catch (error) {
-    // Don't fail the request even if there's an error
     next();
   }
 };

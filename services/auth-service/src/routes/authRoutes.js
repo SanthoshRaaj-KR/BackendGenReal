@@ -7,6 +7,9 @@ const {
   loginValidation,
   forgotPasswordValidation,
   resetPasswordValidation,
+  otpValidation,
+  verifyOtpValidation,
+  resetPasswordWithOtpValidation
 } = require('../middleware/validation');
 const rateLimit = require('express-rate-limit');
 
@@ -43,7 +46,12 @@ router.post('/login', authLimiter, loginValidation, authController.login);
 router.post('/logout', generalLimiter, authController.logout);
 router.post('/refresh-token', generalLimiter, authController.refreshToken);
 
-// Password Reset (public routes)
+// Password Reset with OTP
+router.post('/send-password-reset-otp', authLimiter, otpValidation, authController.sendPasswordResetOTP);
+router.post('/verify-password-reset-otp', authLimiter, verifyOtpValidation, authController.verifyPasswordResetOTP);
+router.post('/reset-password-with-otp', authLimiter, resetPasswordWithOtpValidation, authController.resetPasswordWithOTP);
+
+// Legacy password reset (if you want to keep both methods)
 router.post('/forgot-password', authLimiter, forgotPasswordValidation, authController.forgotPassword);
 router.post('/reset-password', authLimiter, resetPasswordValidation, authController.resetPassword);
 
@@ -70,11 +78,7 @@ router.get('/credits', authenticate, authController.getCredits);
 // Deduct credits (called after successful analysis)
 router.post('/deduct-credits', authenticate, authController.deductCredits);
 
-router.post('/send-password-reset-otp', authLimiter, authController.sendPasswordResetOTP);
-router.post('/verify-password-reset-otp', authLimiter, authController.verifyPasswordResetOTP);
-router.post('/reset-password-with-otp', authLimiter, authController.resetPasswordWithOTP);
-
-// Validate token endpoint (useful for frontend to check if token is still valid)
+// Validate token endpoint (useful for frontend and other services)
 router.get('/validate', authenticate, (req, res) => {
   res.json({
     success: true,
@@ -83,8 +87,12 @@ router.get('/validate', authenticate, (req, res) => {
       id: req.user._id,
       email: req.user.email,
       name: req.user.fullName,
+      firstName: req.user.firstName,
+      lastName: req.user.lastName,
       role: req.user.role,
       credits: req.user.credits,
+      isVerified: req.user.isVerified,
+      plan: req.user.plan
     }
   });
 });
