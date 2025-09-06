@@ -1,21 +1,27 @@
-// src/utils/logger.js
-const { createLogger, format, transports } = require('winston');
+// src/utils/activityLogger.js
+const fs = require('fs');
+const path = require('path');
+const { getDeviceInfo, sanitizeUser } = require('./helpers');
 
-const logger = createLogger({
-  level: 'info',
-  format: format.combine(
-    format.timestamp(),
-    format.printf(({ timestamp, level, message, ...meta }) => {
-      return `${timestamp} [${level.toUpperCase()}] ${message} ${
-        Object.keys(meta).length ? JSON.stringify(meta) : ''
-      }`;
-    })
-  ),
-  transports: [
-    new transports.Console(), // still goes to Render logs
-    new transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new transports.File({ filename: 'logs/combined.log' })
-  ]
-});
+const logFile = path.join(__dirname, '../../logs/entries.log');
 
-module.exports = logger;
+const logActivity = (req, user, action = 'ACTION') => {
+  try {
+    const deviceInfo = getDeviceInfo(req);
+    const cleanUser = sanitizeUser(user);
+
+    const entry = {
+      timestamp: new Date().toISOString(),
+      action,
+      ip: deviceInfo.ip,
+      userAgent: deviceInfo.userAgent,
+      user: cleanUser,
+    };
+
+    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
+  } catch (err) {
+    console.error('Failed to write log entry:', err);
+  }
+};
+
+module.exports = { logActivity };

@@ -5,7 +5,7 @@ class EmailService {
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
       port: process.env.SMTP_PORT,
-      secure: false,
+      secure: process.env.SMTP_PORT == 465,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
@@ -93,7 +93,7 @@ class EmailService {
             
             <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px; padding: 15px; margin: 20px 0;">
               <p style="margin: 0; color: #856404; font-size: 14px;">
-                <strong>⏰ This OTP will expire in 5 minutes.</strong><br>
+                <strong>⏰ This OTP will expire in 3 minutes.</strong><br>
                 <strong>🔒 Maximum 3 attempts allowed.</strong>
               </p>
             </div>

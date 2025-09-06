@@ -51,10 +51,6 @@ router.post('/send-password-reset-otp', authLimiter, otpValidation, authControll
 router.post('/verify-password-reset-otp', authLimiter, verifyOtpValidation, authController.verifyPasswordResetOTP);
 router.post('/reset-password-with-otp', authLimiter, resetPasswordWithOtpValidation, authController.resetPasswordWithOTP);
 
-// Legacy password reset (if you want to keep both methods)
-router.post('/forgot-password', authLimiter, forgotPasswordValidation, authController.forgotPassword);
-router.post('/reset-password', authLimiter, resetPasswordValidation, authController.resetPassword);
-
 // Email Verification (public route)
 router.post('/verify-email', generalLimiter, authController.verifyEmail);
 

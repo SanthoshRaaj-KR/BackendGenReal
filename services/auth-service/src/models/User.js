@@ -94,15 +94,6 @@ const UserSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
-  // Password reset fields (embedded in user document)
-  passwordResetToken: {
-    type: String,
-    default: null,
-  },
-  passwordResetExpires: {
-    type: Date,
-    default: null,
-  },
   // Refresh token fields (embedded in user document)
   refreshToken: {
     type: String,
@@ -146,16 +137,6 @@ UserSchema.methods.isLocked = function() {
   return !!(this.lockUntil && this.lockUntil > Date.now());
 };
 
-// Generate password reset token
-UserSchema.methods.createPasswordResetToken = function() {
-  const resetToken = crypto.randomBytes(32).toString('hex');
-  
-  // Hash the token and set it on the user
-  this.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-  this.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-  
-  return resetToken; // Return the unhashed token to send via email
-};
 
 // Generate refresh token
 UserSchema.methods.createRefreshToken = function(deviceInfo = {}) {
