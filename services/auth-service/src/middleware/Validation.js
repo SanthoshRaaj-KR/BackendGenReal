@@ -6,7 +6,11 @@ const handleValidationErrors = (req, res, next) => {
     return res.status(400).json({
       success: false,
       message: 'Validation failed',
-      errors: errors.array(),
+      errors: errors.array().map(err => ({
+        field: err.path || err.param,
+        message: err.msg,
+        value: err.value
+      })),
     });
   }
   next();
@@ -18,19 +22,18 @@ const registerValidation = [
     .normalizeEmail()
     .withMessage('Please provide a valid email'),
   body('password')
-    .isLength({ min: 6 }) // Changed from 8 to 6 to match your frontend
+    .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters'),
-  // Removed complex password requirements to match frontend
   body('name')
     .optional()
     .trim()
-    .isLength({ min: 2 })
-    .withMessage('Name must be at least 2 characters'),
+    .isLength({ min: 1 })
+    .withMessage('Name cannot be empty'),
   body('firstName')
     .optional()
     .trim()
-    .isLength({ min: 2 })
-    .withMessage('First name must be at least 2 characters'),
+    .isLength({ min: 1 })
+    .withMessage('First name cannot be empty'),
   body('lastName')
     .optional()
     .trim(),
@@ -61,7 +64,7 @@ const resetPasswordValidation = [
     .notEmpty()
     .withMessage('Reset token is required'),
   body('password')
-    .isLength({ min: 6 }) // Changed from 8 to 6
+    .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters'),
   handleValidationErrors,
 ];
@@ -95,13 +98,12 @@ const resetPasswordWithOtpValidation = [
     .isLength({ min: 6, max: 6 })
     .isNumeric()
     .withMessage('OTP must be a 6-digit number'),
-  body('password')
+  body('newPassword')
     .isLength({ min: 6 })
-    .withMessage('Password must be at least 6 characters'),
+    .withMessage('New password must be at least 6 characters'),
   handleValidationErrors,
 ];
 
-// Add to module.exports:
 module.exports = {
   registerValidation,
   loginValidation,

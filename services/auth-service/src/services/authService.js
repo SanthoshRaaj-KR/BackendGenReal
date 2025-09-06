@@ -63,7 +63,7 @@ class AuthService {
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       user.loginAttempts = (user.loginAttempts || 0) + 1;
-      if (user.loginAttempts >= 10) {
+      if (user.loginAttempts >= 25) {
         user.lockUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 mins lock
       }
       await user.save();
@@ -139,7 +139,7 @@ class AuthService {
     return { success: true, message: 'OTP sent to your email address' };
   }
 
-  // Verify OTP
+  // Verify OTP without deleting it (for frontend verification step)
   async verifyPasswordResetOTP(email, otp) {
     const key = `otp:${email.toLowerCase()}`;
     const storedOTP = await client.get(key);
@@ -157,29 +157,54 @@ class AuthService {
       throw new Error(`Invalid OTP. ${3 - attempts} attempts remaining.`);
     }
 
-    // OTP verified, remove from Redis
-    await client.del(key);
-    await client.del(attemptsKey);
-
+    // Don't delete OTP here - we'll delete it when password is actually reset
     return { success: true, message: 'OTP verified successfully' };
   }
 
-
   // Reset password using verified OTP
   async resetPasswordWithOTP(email, otp, newPassword) {
-    // Verify OTP first
-    await this.verifyPasswordResetOTP(email, otp);
+    console.log('resetPasswordWithOTP called with:', { email, otp: otp ? '***' : null, newPassword: newPassword ? '***' : null });
+    
+    const key = `otp:${email.toLowerCase()}`;
+    const storedOTP = await client.get(key);
 
+    console.log('Stored OTP exists:', !!storedOTP);
+
+    if (!storedOTP) throw new Error('OTP has expired or is invalid. Please request a new one.');
+
+    const attemptsKey = `${key}:attempts`;
+    let attempts = parseInt(await client.get(attemptsKey)) || 0;
+
+    console.log('Current attempts:', attempts);
+
+    if (attempts >= 3) throw new Error('Too many invalid attempts. Please request a new OTP.');
+
+    if (storedOTP !== otp) {
+      attempts += 1;
+      await client.set(attemptsKey, attempts, { EX: 180 });
+      throw new Error(`Invalid OTP. ${3 - attempts} attempts remaining.`);
+    }
+
+    // Find user and update password
     const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) throw new Error('User not found');
+    if (!user) throw new Error('User account not found.');
+
+    console.log('User found, updating password...');
 
     user.password = newPassword;
-    user.clearRefreshToken();
+    user.clearRefreshToken(); // Clear all existing sessions
     await user.save();
 
-    return { success: true, message: 'Password reset successfully' };
-  }
+    console.log('Password updated successfully');
 
+    // Only now delete the OTP after successful password reset
+    await client.del(key);
+    await client.del(attemptsKey);
+
+    console.log('OTP cleaned up');
+
+    return { success: true, message: 'Password has been reset successfully. You can now log in with your new password.' };
+  }
 
   // Register and immediately log in
   async registerAndLogin(userData, deviceInfo = {}) {

@@ -83,7 +83,7 @@ class AuthController {
         },
       });
     } catch (err) {
-      res.status(400).json({ success: false, message: 'Login failed' });
+      res.status(400).json({ success: false, message: err.message || 'Login failed' });
     }
   }
 
@@ -108,7 +108,8 @@ class AuthController {
       // Only send token & userId in URL, fetch full profile via frontend API
       const redirectUrl = `${process.env.FRONTEND_URL}/auth/callback?token=${accessToken}&userId=${user._id}`;
       res.redirect(redirectUrl);
-    } catch {
+    } catch (error) {
+      console.error('Google OAuth error:', error);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
   }
@@ -141,7 +142,8 @@ class AuthController {
       await authService.logout(refreshToken);
       res.clearCookie('refreshToken');
       res.json({ success: true, message: 'Logged out' });
-    } catch {
+    } catch (error) {
+      console.error('Logout error:', error);
       res.status(500).json({ success: false, message: 'Logout failed' });
     }
   }
@@ -152,10 +154,11 @@ class AuthController {
       const { email } = req.body;
       if (!email) return res.status(400).json({ success: false, message: 'Email required' });
 
-      await authService.sendPasswordResetOTP(email);
-      res.json({ success: true, message: 'If the email exists, OTP has been sent' });
-    } catch {
-      res.status(500).json({ success: false, message: 'Failed to send OTP' });
+      const result = await authService.sendPasswordResetOTP(email.toLowerCase().trim());
+      res.json(result);
+    } catch (err) {
+      console.error('Send OTP error:', err);
+      res.status(500).json({ success: false, message: err.message || 'Failed to send OTP' });
     }
   }
 
@@ -164,22 +167,44 @@ class AuthController {
       const { email, otp } = req.body;
       if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP required' });
 
-      await authService.verifyPasswordResetOTP(email, otp);
-      res.json({ success: true, message: 'OTP verified' });
-    } catch {
-      res.status(400).json({ success: false, message: 'Invalid OTP' });
+      const result = await authService.verifyPasswordResetOTP(email.toLowerCase().trim(), otp.trim());
+      res.json(result);
+    } catch (err) {
+      console.error('Verify OTP error:', err);
+      res.status(400).json({ success: false, message: err.message || 'Invalid OTP' });
     }
   }
 
   async resetPasswordWithOTP(req, res) {
     try {
-      const { email, otp, password } = req.body;
-      if (!email || !otp || !password || password.length < 6) return res.status(400).json({ success: false, message: 'Invalid request' });
+      console.log('Reset password request body:', req.body); // Debug log
+      const { email, otp, newPassword } = req.body;
+      
+      if (!email || !otp || !newPassword) {
+        console.log('Missing required fields:', { email: !!email, otp: !!otp, newPassword: !!newPassword });
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Email, OTP, and new password are required' 
+        });
+      }
 
-      await authService.resetPasswordWithOTP(email, otp, password);
-      res.json({ success: true, message: 'Password reset successful' });
-    } catch {
-      res.status(400).json({ success: false, message: 'Failed to reset password' });
+      if (newPassword.length < 6) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Password must be at least 6 characters long' 
+        });
+      }
+
+      const result = await authService.resetPasswordWithOTP(
+        email.toLowerCase().trim(), 
+        otp.toString().trim(), 
+        newPassword
+      );
+      
+      res.json(result);
+    } catch (err) {
+      console.error('Reset password error:', err);
+      res.status(400).json({ success: false, message: err.message || 'Failed to reset password' });
     }
   }
 
@@ -199,7 +224,8 @@ class AuthController {
           profilePicture: user.profilePicture,
         },
       });
-    } catch {
+    } catch (error) {
+      console.error('Get profile error:', error);
       res.status(500).json({ success: false, message: 'Error fetching profile' });
     }
   }
