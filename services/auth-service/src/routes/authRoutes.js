@@ -5,8 +5,6 @@ const { authenticate } = require('../middleware/auth');
 const {
   registerValidation,
   loginValidation,
-  forgotPasswordValidation,
-  resetPasswordValidation,
   otpValidation,
   verifyOtpValidation,
   resetPasswordWithOtpValidation
@@ -51,8 +49,6 @@ router.post('/send-password-reset-otp', authLimiter, otpValidation, authControll
 router.post('/verify-password-reset-otp', authLimiter, verifyOtpValidation, authController.verifyPasswordResetOTP);
 router.post('/reset-password-with-otp', authLimiter, resetPasswordWithOtpValidation, authController.resetPasswordWithOTP);
 
-// Email Verification (public route)
-router.post('/verify-email', generalLimiter, authController.verifyEmail);
 
 // Google OAuth Routes
 router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
@@ -61,18 +57,6 @@ router.get('/google/callback',
   authController.googleCallback
 );
 
-// ============================================
-// PROTECTED ROUTES (AUTHENTICATION REQUIRED)
-// ============================================
-
-// Get user profile
-router.get('/profile', authenticate, authController.getProfile);
-
-// Get user credits
-router.get('/credits', authenticate, authController.getCredits);
-
-// Deduct credits (called after successful analysis)
-router.post('/deduct-credits', authenticate, authController.deductCredits);
 
 // Validate token endpoint (useful for frontend and other services)
 router.get('/validate', authenticate, (req, res) => {
