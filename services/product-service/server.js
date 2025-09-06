@@ -1,575 +1,515 @@
-// server.js - GenReal.ai Video, Audio & Image Detection API Backend with Auth Integration
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
-const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
 const compression = require('compression');
-const winston = require('winston');
+const morgan = require('morgan');
 require('dotenv').config();
 
 const app = express();
 
+// =====================================
+// CONFIGURATION & VALIDATION
+// =====================================
+
+// Validate environment variables
+const requiredEnvVars = [
+  'VIDEO_API_URL', 'VIDEO_TOKEN_ID', 'VIDEO_TOKEN_SECRET',
+  'IMAGE_API_URL', 'IMAGE_TOKEN_ID', 'IMAGE_TOKEN_SECRET', 
+  'AUDIO_API_URL', 'AUDIO_TOKEN_ID', 'AUDIO_TOKEN_SECRET'
+];
+
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
+
+const config = {
+  port: process.env.PORT || 3002,
+  nodeEnv: process.env.NODE_ENV || 'development',
+  allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+  rateLimit: {
+    windowMinutes: parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES) || 15,
+    maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 10
+  },
+  maxFileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 500) * 1024 * 1024,
+  requestTimeout: parseInt(process.env.REQUEST_TIMEOUT_MS) || 360000,
+  serverTimeout: parseInt(process.env.SERVER_TIMEOUT_MS) || 600000
+};
+
+console.log('🔧 Server configuration:', {
+  port: config.port,
+  nodeEnv: config.nodeEnv,
+  allowedOrigins: config.allowedOrigins,
+  maxFileSize: `${config.maxFileSize / (1024 * 1024)}MB`,
+  requestTimeout: `${config.requestTimeout / 1000}s`
+});
+
+// =====================================
+// MIDDLEWARE SETUP
+// =====================================
+
 // Security middleware
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-  })
-);
+app.use(helmet({
+  contentSecurityPolicy: false // Allow for API usage
+}));
+
+// Compression middleware
 app.use(compression());
 
-// Logging setup
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'genreal-detection-api' },
-  transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
-    new winston.transports.Console({ format: winston.format.simple() }),
-  ],
-});
-
-// Auth service configuration
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
-
-// Authentication middleware
-const authenticateUser = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required. Please log in.',
-        code: 'NO_TOKEN'
-      });
-    }
-
-    // Validate token with auth service
-    const response = await axios.get(`${AUTH_SERVICE_URL}/api/auth/validate`, {
-      headers: {
-        'Authorization': authHeader
-      },
-      timeout: 5000
-    });
-
-    if (response.data.success) {
-      req.user = response.data.user;
-      next();
-    } else {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid authentication token',
-        code: 'INVALID_TOKEN'
-      });
-    }
-  } catch (error) {
-    logger.error('Authentication error:', error.response?.data || error.message);
-    
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      return res.status(503).json({
-        success: false,
-        error: 'Authentication service unavailable',
-        code: 'AUTH_SERVICE_UNAVAILABLE'
-      });
-    }
-    
-    return res.status(401).json({
-      success: false,
-      error: 'Authentication failed',
-      code: 'AUTH_FAILED'
-    });
-  }
-};
-
-// Credit deduction helper
-const deductCredits = async (user, amount, analysisResult, authHeader) => {
-  try {
-    await axios.post(`${AUTH_SERVICE_URL}/api/auth/deduct-credits`, {
-      amount,
-      analysisResult: analysisResult?.result || 'analysis_completed'
-    }, {
-      headers: {
-        'Authorization': authHeader
-      },
-      timeout: 5000
-    });
-    
-    logger.info('Credits deducted successfully', {
-      userId: user.id,
-      amount,
-      result: analysisResult?.result
-    });
-  } catch (error) {
-    logger.error('Credit deduction failed:', {
-      userId: user.id,
-      amount,
-      error: error.response?.data || error.message
-    });
-    // Don't fail the request if credit deduction fails
-  }
-};
-
-// Rate limiting - more lenient for authenticated users
-const publicLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 requests for unauthenticated
-  message: { 
-    success: false, 
-    error: 'Too many requests from this IP, please try again later or log in for higher limits.' 
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const authenticatedLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes  
-  max: 50, // 50 requests for authenticated users
-  message: { 
-    success: false, 
-    error: 'Rate limit exceeded. Please try again later.' 
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// File upload config
-const MAX_FILE_SIZE = (process.env.MAX_FILE_SIZE_MB || 500) * 1024 * 1024;
-const upload = multer({
-  limits: { fileSize: MAX_FILE_SIZE, files: 1 },
-  fileFilter: (req, file, cb) => {
-    const allowedVideoTypes = [
-      'video/mp4',
-      'video/avi',
-      'video/mov',
-      'video/mkv',
-      'video/webm',
-      'video/quicktime',
-    ];
-    const allowedAudioTypes = [
-      'audio/mpeg',
-      'audio/wav',
-      'audio/ogg',
-      'audio/mp3',
-      'audio/m4a',
-      'audio/aac',
-      'audio/webm',
-    ];
-    const allowedImageTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'image/webp',
-    ];
-
-    const allAllowedTypes = [
-      ...allowedVideoTypes,
-      ...allowedAudioTypes,
-      ...allowedImageTypes,
-    ];
-
-    if (allAllowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(
-        new Error(
-          `Unsupported file type: ${file.mimetype}. Only video, audio, and image files are allowed.`
-        ),
-        false
-      );
-    }
-  },
-});
+// Logging middleware
+if (config.nodeEnv === 'production') {
+  app.use(morgan('combined'));
+} else {
+  app.use(morgan('dev'));
+}
 
 // CORS configuration
-app.use(
-  cors({
-    origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
-    credentials: true,
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  })
-);
-app.use(express.json({ limit: '10mb' }));
-
-// Health check (public endpoint)
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    success: true,
-    status: 'healthy', 
-    timestamp: new Date().toISOString(),
-    service: 'genreal-detection-api',
-    authService: AUTH_SERVICE_URL 
-  });
-});
-
-// Public status endpoint
-app.get('/api/status', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Detection service is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      deepfake: 'active',
-      plagiarism: 'active',
-      auth: 'connected'
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (config.allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      console.warn(`🚫 Blocked CORS request from: ${origin}`);
+      return callback(new Error('Not allowed by CORS'));
     }
-  });
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+
+// Rate limiting
+const rateLimiter = rateLimit({
+  windowMs: config.rateLimit.windowMinutes * 60 * 1000,
+  max: config.rateLimit.maxRequests,
+  message: {
+    error: 'Too many requests from this IP, please try again later.',
+    retryAfter: `${config.rateLimit.windowMinutes} minutes`
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn(`🚫 Rate limit exceeded for IP: ${req.ip}`);
+    res.status(429).json({
+      error: 'Too many requests from this IP, please try again later.',
+      retryAfter: `${config.rateLimit.windowMinutes} minutes`
+    });
+  }
 });
 
-// Detect file type (video, audio, image only)
-const detectFileType = (file) => {
+app.use('/api/', rateLimiter);
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Configure multer for file uploads
+const upload = multer({
+  limits: {
+    fileSize: config.maxFileSize,
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    // Allow specific file types
+    const allowedTypes = [
+      // Video
+      'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 'video/wmv', 
+      'video/flv', 'video/webm', 'video/quicktime',
+      // Audio  
+      'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/aac', 
+      'audio/flac', 'audio/opus', 'audio/mp3',
+      // Image
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 
+      'image/bmp', 'image/tiff',
+      // Code files
+      'text/plain', 'text/x-python', 'application/javascript', 'text/x-java-source',
+      'text/x-c++src', 'text/x-csrc', 'application/json'
+    ];
+
+    const fileExtension = file.originalname.toLowerCase().split('.').pop();
+    const codeExtensions = [
+      'py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 
+      'rs', 'swift', 'kt', 'ts', 'jsx', 'vue', 'html', 'css', 'scss', 
+      'sql', 'r', 'scala', 'sh', 'bat', 'ps1', 'json', 'xml', 'yaml', 'yml'
+    ];
+
+    if (allowedTypes.includes(file.mimetype) || codeExtensions.includes(fileExtension)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported file type: ${file.mimetype || 'unknown'}`), false);
+    }
+  }
+});
+
+// =====================================
+// UTILITY FUNCTIONS
+// =====================================
+
+const getFileType = (file) => {
+  if (!file) return 'unknown';
+  
+  // Check MIME type first
   if (file.mimetype) {
     if (file.mimetype.startsWith('video/')) return 'video';
-    if (file.mimetype.startsWith('audio/')) return 'audio';
     if (file.mimetype.startsWith('image/')) return 'image';
+    if (file.mimetype.startsWith('audio/')) return 'audio';
   }
+
+  // Fallback to file extension
   const ext = file.originalname.toLowerCase().split('.').pop();
-  const videoExt = ['mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'webm', 'm4v'];
-  const audioExt = ['mp3', 'wav', 'ogg', 'm4a', 'aac'];
-  const imageExt = ['jpg', 'jpeg', 'png', 'webp'];
+  const videoExt = ['mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'quicktime'];
+  const imageExt = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff'];
+  const audioExt = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'opus'];
+  const codeExt = ['py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'ts', 'jsx', 'vue', 'html', 'css', 'scss', 'sql', 'r', 'scala', 'sh', 'bat', 'ps1', 'json', 'xml', 'yaml', 'yml'];
+
   if (videoExt.includes(ext)) return 'video';
-  if (audioExt.includes(ext)) return 'audio';
   if (imageExt.includes(ext)) return 'image';
+  if (audioExt.includes(ext)) return 'audio';
+  if (codeExt.includes(ext)) return 'code';
+  
   return 'unknown';
 };
 
-// Get API credentials based on type
-const getApiCredentials = (fileType) => {
+const getApiConfig = (fileType) => {
   switch (fileType) {
     case 'video':
       return {
-        apiUrl: process.env.VIDEO_API_URL,
+        url: process.env.VIDEO_API_URL,
         tokenId: process.env.VIDEO_TOKEN_ID,
         tokenSecret: process.env.VIDEO_TOKEN_SECRET,
-      };
-    case 'audio':
-      return {
-        apiUrl: process.env.AUDIO_API_URL,
-        tokenId: process.env.AUDIO_TOKEN_ID,
-        tokenSecret: process.env.AUDIO_TOKEN_SECRET,
+        timeout: config.requestTimeout
       };
     case 'image':
       return {
-        apiUrl: process.env.IMAGE_API_URL,
+        url: process.env.IMAGE_API_URL,
         tokenId: process.env.IMAGE_TOKEN_ID,
         tokenSecret: process.env.IMAGE_TOKEN_SECRET,
+        timeout: config.requestTimeout
+      };
+    case 'audio':
+      return {
+        url: process.env.AUDIO_API_URL,
+        tokenId: process.env.AUDIO_TOKEN_ID,
+        tokenSecret: process.env.AUDIO_TOKEN_SECRET,
+        timeout: config.requestTimeout
       };
     default:
-      return { apiUrl: null, tokenId: null, tokenSecret: null };
+      throw new Error(`Unsupported file type: ${fileType}`);
   }
 };
 
-// Get credit cost based on file type
-const getCreditCost = (fileType) => {
-  switch (fileType) {
-    case 'video': return 3; // Video analysis costs 3 credits
-    case 'audio': return 2; // Audio analysis costs 2 credits  
-    case 'image': return 1; // Image analysis costs 1 credit
-    default: return 1;
-  }
-};
-
-// PROTECTED Analysis endpoint - requires authentication
-app.post('/api/analyze', 
-  authenticateUser, // Require authentication
-  authenticatedLimiter, // Apply authenticated user rate limit
-  upload.single('file'), 
-  async (req, res) => {
-    const startTime = Date.now();
-    const requestId = Math.random().toString(36).substring(7);
-
-    try {
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          error: 'No file uploaded',
-          code: 'NO_FILE',
-          requestId,
-        });
-      }
-
-      const fileType = detectFileType(req.file);
-      if (fileType === 'unknown') {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid file type. Only video, audio and image files are supported.',
-          code: 'INVALID_FILE_TYPE',
-          requestId,
-        });
-      }
-
-      // Check if user has enough credits
-      const creditCost = getCreditCost(fileType);
-      if (req.user.credits < creditCost) {
-        return res.status(402).json({
-          success: false,
-          error: `Insufficient credits. Required: ${creditCost}, Available: ${req.user.credits}`,
-          code: 'INSUFFICIENT_CREDITS',
-          requiredCredits: creditCost,
-          availableCredits: req.user.credits,
-          requestId
-        });
-      }
-
-      const { apiUrl, tokenId, tokenSecret } = getApiCredentials(fileType);
-      if (!apiUrl || !tokenId || !tokenSecret) {
-        return res.status(500).json({
-          success: false,
-          error: `${fileType.toUpperCase()} API credentials not configured`,
-          requestId,
-        });
-      }
-
-      logger.info('Analysis started', {
-        userId: req.user.id,
-        fileType,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        creditCost,
-        requestId
-      });
-
-      const formData = new FormData();
-      formData.append('file', req.file.buffer, {
-        filename: req.file.originalname,
-        contentType: req.file.mimetype,
-      });
-
-      const response = await axios.post(apiUrl, formData, {
-        headers: {
-          'Modal-Key': tokenId,
-          'Modal-Secret': tokenSecret,
-          ...formData.getHeaders(),
-          'User-Agent': 'GenReal.ai/1.0',
-          'X-Request-ID': requestId,
-        },
-        timeout:
-          parseInt(process.env.REQUEST_TIMEOUT_MS, 10) ||
-          (fileType === 'video' ? 300000 : 120000),
-        maxContentLength: MAX_FILE_SIZE,
-        maxBodyLength: MAX_FILE_SIZE,
-      });
-
-      const processingTime = Date.now() - startTime;
-
-      const unifiedResponse = {
-        success: true,
-        analysisType: fileType,
-        requestId,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        processingTime,
-        timestamp: new Date().toISOString(),
-        status: response.status,
-        service: 'genreal-detection-api',
-        user: {
-          id: req.user.id,
-          email: req.user.email,
-          creditsUsed: creditCost
-        },
-        ...response.data,
-      };
-
-      // Deduct credits after successful analysis
-      await deductCredits(
-        req.user, 
-        creditCost, 
-        { result: response.data.result || 'analysis_completed' }, 
-        req.headers.authorization
-      );
-
-      logger.info('Analysis completed successfully', {
-        userId: req.user.id,
-        fileType,
-        processingTime,
-        creditsUsed: creditCost,
-        requestId
-      });
-
-      res.json(unifiedResponse);
-    } catch (error) {
-      handleApiError(error, res, 'universal', requestId, req.user);
-    }
-  }
-);
-
-// Legacy public endpoint (for backwards compatibility) - with stricter rate limiting
-app.post('/api/analyze-public', 
-  publicLimiter,
-  upload.single('file'), 
-  async (req, res) => {
-    const startTime = Date.now();
-    const requestId = Math.random().toString(36).substring(7);
-
-    try {
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          error: 'No file uploaded',
-          code: 'NO_FILE',
-          requestId,
-        });
-      }
-
-      // For public access, only allow images and limit file size
-      const fileType = detectFileType(req.file);
-      if (fileType !== 'image') {
-        return res.status(403).json({
-          success: false,
-          error: 'Public access is limited to image analysis only. Please sign up for video and audio analysis.',
-          code: 'PUBLIC_LIMIT_EXCEEDED',
-          requestId,
-        });
-      }
-
-      const { apiUrl, tokenId, tokenSecret } = getApiCredentials(fileType);
-      if (!apiUrl || !tokenId || !tokenSecret) {
-        return res.status(500).json({
-          success: false,
-          error: `${fileType.toUpperCase()} API credentials not configured`,
-          requestId,
-        });
-      }
-
-      const formData = new FormData();
-      formData.append('file', req.file.buffer, {
-        filename: req.file.originalname,
-        contentType: req.file.mimetype,
-      });
-
-      const response = await axios.post(apiUrl, formData, {
-        headers: {
-          'Modal-Key': tokenId,
-          'Modal-Secret': tokenSecret,
-          ...formData.getHeaders(),
-          'User-Agent': 'GenReal.ai/1.0',
-          'X-Request-ID': requestId,
-        },
-        timeout: 60000, // 1 minute timeout for public requests
-        maxContentLength: 10 * 1024 * 1024, // 10MB limit for public
-        maxBodyLength: 10 * 1024 * 1024,
-      });
-
-      const processingTime = Date.now() - startTime;
-
-      const unifiedResponse = {
-        success: true,
-        analysisType: fileType,
-        requestId,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        processingTime,
-        timestamp: new Date().toISOString(),
-        status: response.status,
-        service: 'genreal-detection-api',
-        accessType: 'public',
-        message: 'For unlimited access to video and audio analysis, please create an account.',
-        ...response.data,
-      };
-
-      logger.info('Public analysis completed', {
-        fileType,
-        processingTime,
-        requestId
-      });
-
-      res.json(unifiedResponse);
-    } catch (error) {
-      handleApiError(error, res, 'public', requestId);
-    }
-  }
-);
-
-// Error handler
-const handleApiError = (error, res, analysisType, requestId, user = null) => {
-  logger.error('API Error:', {
+const handleApiError = (error, res, type) => {
+  const errorDetails = {
     message: error.message,
-    stack: error.stack,
-    analysisType,
-    requestId,
-    userId: user?.id
-  });
+    status: error.response?.status,
+    data: error.response?.data,
+    url: error.config?.url
+  };
 
-  if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+  console.error(`❌ ${type} API error:`, errorDetails);
+
+  if (error.code === 'ECONNABORTED') {
     return res.status(408).json({
-      success: false,
-      error: 'Analysis timeout - the file is taking too long to process',
-      code: 'TIMEOUT',
-      requestId,
+      error: `Request timeout - ${type} analysis took too long`,
+      details: 'The file may be too large or the service is experiencing high load',
+      retryAfter: 300
     });
   }
+
   if (error.response) {
-    return res.status(error.response.status).json({
-      success: false,
-      error: 'External API error',
-      code: 'EXTERNAL_API_ERROR',
-      details: error.response.data,
-      requestId,
+    const status = error.response.status;
+    const message = error.response.data?.error || error.response.data || `${type} API Error`;
+    
+    return res.status(status >= 400 && status < 600 ? status : 500).json({
+      error: message,
+      details: error.response.statusText,
+      service: type
     });
-  }
+  } 
+  
   if (error.request) {
     return res.status(503).json({
-      success: false,
-      error: 'Service unavailable - unable to connect to analysis service',
-      code: 'SERVICE_UNAVAILABLE',
-      requestId,
+      error: `Unable to reach ${type} analysis service`,
+      details: 'The service may be temporarily unavailable',
+      retryAfter: 60
     });
   }
-  if (error instanceof multer.MulterError) {
-    return res.status(413).json({
-      success: false,
-      error: 'File upload error',
-      code:
-        error.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'UPLOAD_ERROR',
-      details: error.message,
-      maxSize: `${process.env.MAX_FILE_SIZE_MB || 500}MB`,
-      requestId,
-    });
-  }
+
   return res.status(500).json({
-    success: false,
     error: 'Internal server error',
-    code: 'INTERNAL_ERROR',
-    requestId,
+    details: error.message,
+    service: type
   });
 };
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
-    code: 'NOT_FOUND',
+// =====================================
+// API ENDPOINTS
+// =====================================
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    environment: config.nodeEnv,
+    uptime: process.uptime()
   });
 });
+
+// Deepfake analysis endpoint (handles video, image, audio)
+app.post('/api/analyze', upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    if (!req.file) {
+      return res.status(400).json({ 
+        error: 'No file uploaded',
+        supportedTypes: ['video', 'image', 'audio']
+      });
+    }
+
+    const fileType = getFileType(req.file);
+    
+    if (fileType === 'unknown' || fileType === 'code') {
+      return res.status(400).json({
+        error: `Unsupported file type for deepfake analysis: ${fileType}`,
+        supportedTypes: ['video', 'image', 'audio'],
+        receivedFile: {
+          name: req.file.originalname,
+          mimetype: req.file.mimetype,
+          size: req.file.size
+        }
+      });
+    }
+
+    console.log(`🔍 Analyzing ${fileType.toUpperCase()} file:`, {
+      name: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: `${(req.file.size / (1024 * 1024)).toFixed(2)}MB`,
+      type: fileType
+    });
+
+    const apiConfig = getApiConfig(fileType);
+
+    // Prepare form data for API request
+    const formData = new FormData();
+    formData.append('file', req.file.buffer, {
+      filename: req.file.originalname,
+      contentType: req.file.mimetype
+    });
+
+    console.log(`📡 Sending request to ${fileType.toUpperCase()} API: ${apiConfig.url}`);
+
+    const response = await axios.post(apiConfig.url, formData, {
+      headers: {
+        'Modal-Key': apiConfig.tokenId,
+        'Modal-Secret': apiConfig.tokenSecret,
+        ...formData.getHeaders()
+      },
+      timeout: apiConfig.timeout,
+      maxContentLength: config.maxFileSize,
+      maxBodyLength: config.maxFileSize
+    });
+
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ ${fileType.toUpperCase()} API response (${processingTime}ms):`, {
+      status: response.status,
+      dataKeys: Object.keys(response.data || {})
+    });
+
+    // Log the full response for debugging
+    console.log('🔍 Full API Response:', JSON.stringify(response.data, null, 2));
+
+    // Return the response with additional metadata
+    const result = {
+      ...response.data,
+      analysisType: fileType,
+      processingTime,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json(result);
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`❌ Analysis failed after ${processingTime}ms:`, error.message);
+    
+    const fileType = req.file ? getFileType(req.file) : 'unknown';
+    handleApiError(error, res, fileType);
+  }
+});
+
+// Code plagiarism check endpoint
+app.post('/api/plagiarism/check', upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    if (!req.file) {
+      return res.status(400).json({ 
+        error: 'No code file uploaded',
+        supportedTypes: ['code files (.py, .js, .java, .cpp, etc.)']
+      });
+    }
+
+    const fileType = getFileType(req.file);
+    
+    if (fileType !== 'code') {
+      return res.status(400).json({
+        error: 'Only code files are supported for plagiarism checking',
+        receivedType: fileType,
+        supportedExtensions: ['.py', '.js', '.java', '.cpp', '.c', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.ts']
+      });
+    }
+
+    const fileContent = req.file.buffer.toString('utf8');
+    const language = req.body.language || 'unknown';
+
+    if (!fileContent.trim()) {
+      return res.status(400).json({ error: 'Code file appears to be empty' });
+    }
+
+    console.log(`🔍 Checking code plagiarism:`, {
+      filename: req.file.originalname,
+      language: language,
+      size: `${fileContent.length} characters`,
+      lines: fileContent.split('\n').length
+    });
+
+    // Code plagiarism API endpoint (you'll need to add this to your env)
+    const codeApiUrl = 'https://binshilin63--code-deepfake-detector-deepfakecodeapi-predict.modal.run';
+    
+    const formData = new FormData();
+    formData.append('code', fileContent);
+
+    console.log(`📡 Sending request to Code Plagiarism API: ${codeApiUrl}`);
+
+    const response = await axios.post(codeApiUrl, formData, {
+      headers: {
+        'Modal-Key': process.env.VIDEO_TOKEN_ID, // Using video creds for now
+        'Modal-Secret': process.env.VIDEO_TOKEN_SECRET,
+        ...formData.getHeaders()
+      },
+      timeout: config.requestTimeout,
+      maxContentLength: config.maxFileSize,
+      maxBodyLength: config.maxFileSize
+    });
+
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ Code Plagiarism API response (${processingTime}ms):`, {
+      status: response.status,
+      dataKeys: Object.keys(response.data || {})
+    });
+
+    // Log the full response for debugging
+    console.log('🔍 Full Code API Response:', JSON.stringify(response.data, null, 2));
+
+    // Format response for consistency
+    const result = {
+      ...response.data,
+      analysisType: 'code',
+      language: language,
+      processingTime,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      codeLength: fileContent.length,
+      linesOfCode: fileContent.split('\n').length,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json(result);
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error(`❌ Code plagiarism check failed after ${processingTime}ms:`, error.message);
+    
+    handleApiError(error, res, 'Code');
+  }
+});
+
+// =====================================
+// ERROR HANDLING & SERVER SETUP
+// =====================================
 
 // Global error handler
 app.use((error, req, res, next) => {
-  logger.error('Unhandled error:', {
-    message: error.message,
-    stack: error.stack,
+  console.error('🚨 Unhandled error:', error);
+  
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        error: 'File too large',
+        maxSize: `${config.maxFileSize / (1024 * 1024)}MB`,
+        details: error.message
+      });
+    }
+    return res.status(400).json({
+      error: 'File upload error',
+      details: error.message,
+      code: error.code
+    });
+  }
+
+  res.status(500).json({
+    error: 'Internal server error',
+    message: config.nodeEnv === 'production' ? 'Something went wrong' : error.message
   });
-  handleApiError(error, res, 'unknown', 'unknown');
 });
 
-const PORT = process.env.PORT || 3002;
-const server = app.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT}`, {
-    nodeEnv: process.env.NODE_ENV,
-    authServiceUrl: AUTH_SERVICE_URL
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Endpoint not found',
+    availableEndpoints: [
+      'GET /health',
+      'POST /api/analyze (video/image/audio deepfake detection)',
+      'POST /api/plagiarism/check (code plagiarism detection)'
+    ]
   });
-  console.log(`🚀 Detection Service listening on port ${PORT}`);
-  console.log(`🔐 Auth Service URL: ${AUTH_SERVICE_URL}`);
 });
 
-server.timeout = parseInt(process.env.SERVER_TIMEOUT_MS, 10) || 600000;
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
+});
+
+// Start server
+const server = app.listen(config.port, () => {
+  console.log(`🚀 Production server running on port ${config.port}`);
+  console.log(`🌐 Environment: ${config.nodeEnv}`);
+  console.log(`📊 Health check: http://localhost:${config.port}/health`);
+  console.log(`🔍 Deepfake API: http://localhost:${config.port}/api/analyze`);
+  console.log(`💻 Code Plagiarism API: http://localhost:${config.port}/api/plagiarism/check`);
+  console.log(`⚡ Max file size: ${config.maxFileSize / (1024 * 1024)}MB`);
+  console.log(`🔒 Rate limit: ${config.rateLimit.maxRequests} requests per ${config.rateLimit.windowMinutes} minutes`);
+});
+
+// Set server timeout
+server.setTimeout(config.serverTimeout);
 
 module.exports = app;
