@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const emailService = require('./emailService');
+const client = require('../config/redis');
 
 class AuthService {
 
@@ -62,7 +63,7 @@ class AuthService {
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       user.loginAttempts = (user.loginAttempts || 0) + 1;
-      if (user.loginAttempts >= 5) {
+      if (user.loginAttempts >= 10) {
         user.lockUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 mins lock
       }
       await user.save();
@@ -122,17 +123,14 @@ class AuthService {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return { success: true, message: 'If an account exists, OTP has been sent' };
 
-    await OTPReset.deleteMany({ email: email.toLowerCase() });
-
     const otp = this.generateOTP();
-    const expiresAt = new Date(Date.now() + 3 * 60 * 1000); // 3 mins
+    const key = `otp:${email.toLowerCase()}`;
 
-    await OTPReset.create({ email: email.toLowerCase(), otp, expiresAt });
+    await client.set(key, otp, { EX: 180 }); // expires in 3 minutes
+    await client.set(`${key}:attempts`, 0, { EX: 180 }); // track attempts
 
     try {
-      if (emailService && emailService.sendOTPEmail) {
-        await emailService.sendOTPEmail(email, user.firstName, otp);
-      }
+      await emailService.sendOTPEmail(email, user.firstName, otp);
     } catch (error) {
       console.error('Failed to send OTP email:', error);
       throw new Error('Failed to send OTP. Please try again.');
@@ -143,39 +141,34 @@ class AuthService {
 
   // Verify OTP
   async verifyPasswordResetOTP(email, otp) {
-    const otpRecord = await OTPReset.findOne({
-      email: email.toLowerCase(),
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
-    });
+    const key = `otp:${email.toLowerCase()}`;
+    const storedOTP = await client.get(key);
 
-    if (!otpRecord) throw new Error('Invalid or expired OTP');
+    if (!storedOTP) throw new Error('Invalid or expired OTP');
 
-    if (otpRecord.attempts >= 3) throw new Error('Too many invalid attempts. Please request a new OTP.');
+    const attemptsKey = `${key}:attempts`;
+    let attempts = parseInt(await client.get(attemptsKey)) || 0;
 
-    if (otpRecord.otp !== otp) {
-      otpRecord.attempts += 1;
-      await otpRecord.save();
-      throw new Error(`Invalid OTP. ${3 - otpRecord.attempts} attempts remaining.`);
+    if (attempts >= 3) throw new Error('Too many invalid attempts. Request a new OTP.');
+
+    if (storedOTP !== otp) {
+      attempts += 1;
+      await client.set(attemptsKey, attempts, { EX: 180 }); // reset expiry with OTP
+      throw new Error(`Invalid OTP. ${3 - attempts} attempts remaining.`);
     }
 
-    otpRecord.isVerified = true;
-    await otpRecord.save();
+    // OTP verified, remove from Redis
+    await client.del(key);
+    await client.del(attemptsKey);
 
     return { success: true, message: 'OTP verified successfully' };
   }
 
+
   // Reset password using verified OTP
   async resetPasswordWithOTP(email, otp, newPassword) {
-    const otpRecord = await OTPReset.findOne({
-      email: email.toLowerCase(),
-      otp,
-      isVerified: true,
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!otpRecord) throw new Error('Invalid OTP or session expired. Please start over.');
+    // Verify OTP first
+    await this.verifyPasswordResetOTP(email, otp);
 
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) throw new Error('User not found');
@@ -184,11 +177,9 @@ class AuthService {
     user.clearRefreshToken();
     await user.save();
 
-    otpRecord.isUsed = true;
-    await otpRecord.save();
-
     return { success: true, message: 'Password reset successfully' };
   }
+
 
   // Register and immediately log in
   async registerAndLogin(userData, deviceInfo = {}) {
