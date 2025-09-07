@@ -1,18 +1,19 @@
-# Use Node.js LTS
-FROM node:18-alpine
+FROM node:18
 
-# Set working directory
+# Create app directory
 WORKDIR /usr/src/app
 
-# Install dependencies
+# Copy package files first (for caching)
 COPY package*.json ./
-RUN npm install --production
 
-# Copy app source
+# Install dependencies
+RUN npm install
+
+# Copy rest of the application
 COPY . .
 
-# Expose the Render-assigned port
+# Expose port
 EXPOSE 3001
 
-# Start the app
+# Start app.js
 CMD ["node", "app.js"]

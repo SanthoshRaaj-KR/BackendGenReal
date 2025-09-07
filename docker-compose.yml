@@ -1,0 +1,26 @@
+services:
+  redis:
+    image: redis:7
+    container_name: otp_redis
+    ports:
+      - "6379:6379"
+
+  auth:
+    build: ./services/auth-service
+    container_name: auth_service
+    command: node app.js
+    env_file:
+      - ./services/auth-service/.env
+    ports:
+      - "3001:3001"
+    depends_on:
+      - redis
+
+  product:
+    build: ./services/product-service
+    container_name: product_service
+    command: node server.js
+    env_file:
+      - ./services/product-service/.env
+    ports:
+      - "3002:3002"
