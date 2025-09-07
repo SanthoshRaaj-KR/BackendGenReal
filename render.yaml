@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: auth-service
+    env: docker
+    dockerfilePath: ./services/auth-service/Dockerfile
+    plan: free
+
+  - type: web
+    name: product-service
+    env: docker
+    dockerfilePath: ./services/product-service/Dockerfile
+    plan: free
+
+  - type: redis
+    name: otp-redis
+    ipAllowList: []
