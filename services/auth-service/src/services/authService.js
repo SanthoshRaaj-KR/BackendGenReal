@@ -2,7 +2,6 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const emailService = require('./emailService');
-const client = require('../config/redis');
 
 class AuthService {
 
@@ -123,11 +122,8 @@ class AuthService {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return { success: true, message: 'If an account exists, OTP has been sent' };
 
-    const otp = this.generateOTP();
-    const key = `otp:${email.toLowerCase()}`;
-
-    await client.set(key, otp, { EX: 180 }); // expires in 3 minutes
-    await client.set(`${key}:attempts`, 0, { EX: 180 }); // track attempts
+    const otp = user.createPasswordResetOTP();
+    await user.save();
 
     try {
       await emailService.sendOTPEmail(email, user.firstName, otp);
@@ -141,67 +137,44 @@ class AuthService {
 
   // Verify OTP without deleting it (for frontend verification step)
   async verifyPasswordResetOTP(email, otp) {
-    const key = `otp:${email.toLowerCase()}`;
-    const storedOTP = await client.get(key);
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) throw new Error('User not found');
 
-    if (!storedOTP) throw new Error('Invalid or expired OTP');
-
-    const attemptsKey = `${key}:attempts`;
-    let attempts = parseInt(await client.get(attemptsKey)) || 0;
-
-    if (attempts >= 3) throw new Error('Too many invalid attempts. Request a new OTP.');
-
-    if (storedOTP !== otp) {
-      attempts += 1;
-      await client.set(attemptsKey, attempts, { EX: 180 }); // reset expiry with OTP
-      throw new Error(`Invalid OTP. ${3 - attempts} attempts remaining.`);
+    const validation = user.validatePasswordResetOTP(otp);
+    
+    if (!validation.valid) {
+      await user.save(); // Save the updated attempt count
+      throw new Error(validation.message);
     }
 
-    // Don't delete OTP here - we'll delete it when password is actually reset
-    return { success: true, message: 'OTP verified successfully' };
+    return { success: true, message: validation.message };
   }
 
   // Reset password using verified OTP
   async resetPasswordWithOTP(email, otp, newPassword) {
     console.log('resetPasswordWithOTP called with:', { email, otp: otp ? '***' : null, newPassword: newPassword ? '***' : null });
     
-    const key = `otp:${email.toLowerCase()}`;
-    const storedOTP = await client.get(key);
-
-    console.log('Stored OTP exists:', !!storedOTP);
-
-    if (!storedOTP) throw new Error('OTP has expired or is invalid. Please request a new one.');
-
-    const attemptsKey = `${key}:attempts`;
-    let attempts = parseInt(await client.get(attemptsKey)) || 0;
-
-    console.log('Current attempts:', attempts);
-
-    if (attempts >= 3) throw new Error('Too many invalid attempts. Please request a new OTP.');
-
-    if (storedOTP !== otp) {
-      attempts += 1;
-      await client.set(attemptsKey, attempts, { EX: 180 });
-      throw new Error(`Invalid OTP. ${3 - attempts} attempts remaining.`);
-    }
-
-    // Find user and update password
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) throw new Error('User account not found.');
 
-    console.log('User found, updating password...');
+    console.log('User found, validating OTP...');
 
+    const validation = user.validatePasswordResetOTP(otp);
+    
+    if (!validation.valid) {
+      await user.save(); // Save the updated attempt count
+      throw new Error(validation.message);
+    }
+
+    console.log('OTP validated, updating password...');
+
+    // Update password and clear OTP data
     user.password = newPassword;
+    user.clearPasswordResetOTP();
     user.clearRefreshToken(); // Clear all existing sessions
     await user.save();
 
     console.log('Password updated successfully');
-
-    // Only now delete the OTP after successful password reset
-    await client.del(key);
-    await client.del(attemptsKey);
-
-    console.log('OTP cleaned up');
 
     return { success: true, message: 'Password has been reset successfully. You can now log in with your new password.' };
   }

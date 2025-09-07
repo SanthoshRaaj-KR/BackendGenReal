@@ -94,6 +94,7 @@ const startServer = async () => {
       console.log(`Auth service running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`Google OAuth configured: ${process.env.GOOGLE_CLIENT_ID ? 'Yes' : 'No'}`);
+      console.log('Using MongoDB for OTP storage (Redis removed)');
     });
   } catch (error) {
     console.error('Unable to start server:', error);

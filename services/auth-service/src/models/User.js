@@ -108,6 +108,23 @@ const UserSchema = new mongoose.Schema({
     ip: String,
     lastUsed: Date,
   },
+  // OTP fields for password reset
+  passwordResetOTP: {
+    type: String,
+    default: null,
+  },
+  passwordResetOTPExpires: {
+    type: Date,
+    default: null,
+  },
+  passwordResetOTPAttempts: {
+    type: Number,
+    default: 0,
+  },
+  passwordResetOTPAttemptsExpires: {
+    type: Date,
+    default: null,
+  },
 }, {
   timestamps: true,
 });
@@ -115,6 +132,7 @@ const UserSchema = new mongoose.Schema({
 // Indexes for performance
 UserSchema.index({ passwordResetToken: 1 });
 UserSchema.index({ refreshToken: 1 });
+UserSchema.index({ passwordResetOTP: 1 });
 
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
@@ -136,7 +154,6 @@ UserSchema.methods.comparePassword = async function(candidatePassword) {
 UserSchema.methods.isLocked = function() {
   return !!(this.lockUntil && this.lockUntil > Date.now());
 };
-
 
 // Generate refresh token
 UserSchema.methods.createRefreshToken = function(deviceInfo = {}) {
@@ -166,6 +183,53 @@ UserSchema.methods.clearRefreshToken = function() {
   this.refreshToken = null;
   this.refreshTokenExpires = null;
   this.deviceInfo = {};
+};
+
+// OTP methods
+UserSchema.methods.createPasswordResetOTP = function() {
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  this.passwordResetOTP = otp;
+  this.passwordResetOTPExpires = Date.now() + 3 * 60 * 1000; // 3 minutes
+  this.passwordResetOTPAttempts = 0;
+  this.passwordResetOTPAttemptsExpires = Date.now() + 3 * 60 * 1000; // 3 minutes
+  
+  return otp;
+};
+
+UserSchema.methods.validatePasswordResetOTP = function(candidateOTP) {
+  if (!this.passwordResetOTP || !this.passwordResetOTPExpires) {
+    return { valid: false, message: 'OTP has expired or is invalid. Please request a new one.' };
+  }
+  
+  if (Date.now() > this.passwordResetOTPExpires) {
+    return { valid: false, message: 'OTP has expired. Please request a new one.' };
+  }
+  
+  // Check if attempts have expired (reset counter if expired)
+  if (this.passwordResetOTPAttemptsExpires && Date.now() > this.passwordResetOTPAttemptsExpires) {
+    this.passwordResetOTPAttempts = 0;
+    this.passwordResetOTPAttemptsExpires = Date.now() + 3 * 60 * 1000;
+  }
+  
+  if (this.passwordResetOTPAttempts >= 3) {
+    return { valid: false, message: 'Too many invalid attempts. Please request a new OTP.' };
+  }
+  
+  if (this.passwordResetOTP !== candidateOTP) {
+    this.passwordResetOTPAttempts += 1;
+    const remainingAttempts = 3 - this.passwordResetOTPAttempts;
+    return { valid: false, message: `Invalid OTP. ${remainingAttempts} attempts remaining.` };
+  }
+  
+  return { valid: true, message: 'OTP verified successfully' };
+};
+
+UserSchema.methods.clearPasswordResetOTP = function() {
+  this.passwordResetOTP = null;
+  this.passwordResetOTPExpires = null;
+  this.passwordResetOTPAttempts = 0;
+  this.passwordResetOTPAttemptsExpires = null;
 };
 
 // Credits management methods
