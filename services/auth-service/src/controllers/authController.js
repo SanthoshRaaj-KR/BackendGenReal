@@ -34,7 +34,6 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        
       });
 
       // Return access token + minimal user info
@@ -88,11 +87,15 @@ class AuthController {
     }
   }
 
-  // ================== GOOGLE CALLBACK ==================
+  // ================== GOOGLE CALLBACK - FIXED ==================
   async googleCallback(req, res) {
     try {
       const user = req.user;
-      if (!user) return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_failed`);
+      if (!user) {
+        // Get redirect URL from session or fallback to default
+        const redirectUrl = req.session?.oauthRedirect || '/';
+        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+      }
 
       const deviceInfo = getDeviceInfo(req);
       const { accessToken } = authService.generateTokens(user);
@@ -104,14 +107,39 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-       
       });
 
-      // Only send token & userId in URL, fetch full profile via frontend API
-      const redirectUrl = `${process.env.FRONTEND_URL}/auth/callback?token=${accessToken}&userId=${user._id}`;
-      res.redirect(redirectUrl);
+      // Get the original redirect URL from session (stored during OAuth initiation)
+      const redirectUrl = req.session?.oauthRedirect || '/';
+      
+      // Clear the redirect from session
+      if (req.session?.oauthRedirect) {
+        delete req.session.oauthRedirect;
+      }
+
+      // Redirect with token, userId, and the original redirect parameter
+      const callbackUrl = `${process.env.FRONTEND_URL}/auth/callback?token=${accessToken}&userId=${user._id}&redirect=${encodeURIComponent(redirectUrl)}`;
+      
+      console.log('Google OAuth callback redirect URL:', callbackUrl); // Debug log
+      res.redirect(callbackUrl);
     } catch (error) {
       console.error('Google OAuth error:', error);
+      const redirectUrl = req.session?.oauthRedirect || '/';
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error&redirect=${encodeURIComponent(redirectUrl)}`);
+    }
+  }
+
+  // ================== GOOGLE OAUTH INITIATION - NEW METHOD ==================
+  async googleOAuth(req, res, next) {
+    try {
+      // Store the redirect URL in session before initiating OAuth
+      const redirectUrl = req.query.redirect || '/';
+      req.session.oauthRedirect = redirectUrl;
+      
+      // Continue with passport Google authentication
+      next();
+    } catch (error) {
+      console.error('Google OAuth initiation error:', error);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
   }
@@ -129,7 +157,6 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        
       });
 
       res.json({ success: true, token: tokens.accessToken });
@@ -148,6 +175,28 @@ class AuthController {
     } catch (error) {
       console.error('Logout error:', error);
       res.status(500).json({ success: false, message: 'Logout failed' });
+    }
+  }
+
+  // ================== VALIDATE TOKEN ==================
+  async validate(req, res) {
+    try {
+      const user = req.user;
+      res.json({
+        success: true,
+        user: {
+          id: user._id,
+          email: user.email,
+          name: `${user.firstName} ${user.lastName}`.trim(),
+          role: user.role,
+          credits: user.credits,
+          isVerified: user.isVerified,
+          profilePicture: user.profilePicture,
+        },
+      });
+    } catch (error) {
+      console.error('Validate token error:', error);
+      res.status(500).json({ success: false, message: 'Token validation failed' });
     }
   }
 

@@ -18,7 +18,7 @@ const app = express();
 // Validate environment variables
 const requiredEnvVars = [
   'VIDEO_API_URL', 'VIDEO_TOKEN_ID', 'VIDEO_TOKEN_SECRET',
-  'IMAGE_API_URL', 'IMAGE_TOKEN_ID', 'IMAGE_TOKEN_SECRET', 
+  'IMAGE_API_URL', 'IMAGE_TOKEN_ID', 'IMAGE_TOKEN_SECRET',
   'AUDIO_API_URL', 'AUDIO_TOKEN_ID', 'AUDIO_TOKEN_SECRET',
   'CODE_API_URL', 'CODE_TOKEN_ID', 'CODE_TOKEN_SECRET'
 ];
@@ -33,7 +33,7 @@ for (const envVar of requiredEnvVars) {
 const config = {
   port: process.env.PORT || 3002,
   nodeEnv: process.env.NODE_ENV || 'development',
-  allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+  allowedOrigins: process.env.ALLOWED_ORIGINS?.split(','),
   rateLimit: {
     windowMinutes: parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES) || 15,
     maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 10
@@ -70,23 +70,40 @@ if (config.nodeEnv === 'production') {
   app.use(morgan('dev'));
 }
 
-// CORS configuration
+app.set('trust proxy', 1)
+
+// CORS configuration (UPDATED SECTION)
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (config.allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      console.warn(`🚫 Blocked CORS request from: ${origin}`);
-      return callback(new Error('Not allowed by CORS'));
+    // Check if the environment is not production and the origin is a localhost URL
+    const isDevelopment = config.nodeEnv !== 'production';
+    const isLocalhost = origin && origin.startsWith('http://localhost:');
+
+    // Allow requests with no origin (e.g., Postman, mobile apps)
+    if (!origin) {
+        return callback(null, true);
     }
+    
+    // Allow if origin is in the configured list
+    if (config.allowedOrigins && config.allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow if in development and the request is from localhost
+    if (isDevelopment && isLocalhost) {
+        console.log(`✅ Allowed development request from: ${origin}`);
+        return callback(null, true);
+    }
+
+    // Otherwise, block the request
+    console.warn(`🚫 Blocked CORS request from: ${origin}`);
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
 
 // Rate limiting
 const rateLimiter = rateLimit({
@@ -123,13 +140,13 @@ const upload = multer({
     // Allow specific file types
     const allowedTypes = [
       // Video
-      'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 'video/wmv', 
+      'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 'video/wmv',
       'video/flv', 'video/webm', 'video/quicktime',
-      // Audio  
-      'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/aac', 
+      // Audio
+      'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/aac',
       'audio/flac', 'audio/opus', 'audio/mp3',
       // Image
-      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
       'image/bmp', 'image/tiff',
       // Code files
       'text/plain', 'text/x-python', 'application/javascript', 'text/x-java-source',
@@ -138,8 +155,8 @@ const upload = multer({
 
     const fileExtension = file.originalname.toLowerCase().split('.').pop();
     const codeExtensions = [
-      'py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 
-      'rs', 'swift', 'kt', 'ts', 'jsx', 'vue', 'html', 'css', 'scss', 
+      'py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go',
+      'rs', 'swift', 'kt', 'ts', 'jsx', 'vue', 'html', 'css', 'scss',
       'sql', 'r', 'scala', 'sh', 'bat', 'ps1', 'json', 'xml', 'yaml', 'yml'
     ];
 
@@ -157,7 +174,7 @@ const upload = multer({
 
 const getFileType = (file) => {
   if (!file) return 'unknown';
-  
+
   // Check MIME type first
   if (file.mimetype) {
     if (file.mimetype.startsWith('video/')) return 'video';
@@ -176,7 +193,7 @@ const getFileType = (file) => {
   if (imageExt.includes(ext)) return 'image';
   if (audioExt.includes(ext)) return 'audio';
   if (codeExt.includes(ext)) return 'code';
-  
+
   return 'unknown';
 };
 
@@ -236,14 +253,14 @@ const handleApiError = (error, res, type) => {
   if (error.response) {
     const status = error.response.status;
     const message = error.response.data?.error || error.response.data || `${type} API Error`;
-    
+
     return res.status(status >= 400 && status < 600 ? status : 500).json({
       error: message,
       details: error.response.statusText,
       service: type
     });
-  } 
-  
+  }
+
   if (error.request) {
     return res.status(503).json({
       error: `Unable to reach ${type} analysis service`,
@@ -277,17 +294,17 @@ app.get('/health', (req, res) => {
 // Deepfake analysis endpoint (handles video, image, audio)
 app.post('/api/analyze', upload.single('file'), async (req, res) => {
   const startTime = Date.now();
-  
+
   try {
     if (!req.file) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No file uploaded',
         supportedTypes: ['video', 'image', 'audio']
       });
     }
 
     const fileType = getFileType(req.file);
-    
+
     if (fileType === 'unknown' || fileType === 'code') {
       return res.status(400).json({
         error: `Unsupported file type for deepfake analysis: ${fileType}`,
@@ -354,7 +371,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error(`❌ Analysis failed after ${processingTime}ms:`, error.message);
-    
+
     const fileType = req.file ? getFileType(req.file) : 'unknown';
     handleApiError(error, res, fileType);
   }
@@ -363,17 +380,17 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
 // Code plagiarism check endpoint
 app.post('/api/plagiarism/check', upload.single('file'), async (req, res) => {
   const startTime = Date.now();
-  
+
   try {
     if (!req.file) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No code file uploaded',
         supportedTypes: ['code files (.py, .js, .java, .cpp, etc.)']
       });
     }
 
     const fileType = getFileType(req.file);
-    
+
     if (fileType !== 'code') {
       return res.status(400).json({
         error: 'Only code files are supported for plagiarism checking',
@@ -443,7 +460,7 @@ app.post('/api/plagiarism/check', upload.single('file'), async (req, res) => {
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error(`❌ Code plagiarism check failed after ${processingTime}ms:`, error.message);
-    
+
     handleApiError(error, res, 'Code');
   }
 });
@@ -455,7 +472,7 @@ app.post('/api/plagiarism/check', upload.single('file'), async (req, res) => {
 // Global error handler
 app.use((error, req, res, next) => {
   console.error('🚨 Unhandled error:', error);
-  
+
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
