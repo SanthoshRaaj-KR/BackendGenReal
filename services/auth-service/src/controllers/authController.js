@@ -34,6 +34,7 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
+        domain: ".onrender.com",
       });
 
       // Return access token + minimal user info
@@ -103,6 +104,7 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
+        domain: ".onrender.com",
       });
 
       // Only send token & userId in URL, fetch full profile via frontend API
@@ -127,6 +129,7 @@ class AuthController {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000,
+        domain: ".onrender.com",
       });
 
       res.json({ success: true, token: tokens.accessToken });
