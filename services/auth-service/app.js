@@ -4,6 +4,7 @@ const morgan = require('morgan');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoose = require('mongoose');
+const session = require('express-session');
 require('dotenv').config();
 
 // Import Passport configuration
@@ -33,8 +34,24 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Initialize Passport middleware
+// ==============================================================
+//  2. ADD AND CONFIGURE SESSION MIDDLEWARE (THE FIX)
+// ==============================================================
+app.use(session({
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false, // Set to false, good practice
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax', // VERY IMPORTANT for OAuth redirects
+    maxAge: 24 * 60 * 60 * 1000 // 1 day
+  }
+}));
+
+// Initialize Passport middleware (MUST be after session)
 app.use(passport.initialize());
+app.use(passport.session()); // <-- 3. ENABLE PASSPORT SESSIONS
 
 app.use(securityMiddleware);
 
@@ -50,6 +67,8 @@ app.get('/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 
+// ... (The rest of your file is perfect, no more changes needed) ...
+
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
@@ -64,13 +83,11 @@ app.use((err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
   
-  // Mongoose duplicate key error
   if (err.code === 11000) {
     const message = 'Resource already exists';
     return res.status(409).json({ success: false, message });
   }
   
-  // Mongoose validation error
   if (err.name === 'ValidationError') {
     const errors = Object.values(err.errors).map(val => ({
       field: val.path,
