@@ -19,7 +19,8 @@ const app = express();
 const requiredEnvVars = [
   'VIDEO_API_URL', 'VIDEO_TOKEN_ID', 'VIDEO_TOKEN_SECRET',
   'IMAGE_API_URL', 'IMAGE_TOKEN_ID', 'IMAGE_TOKEN_SECRET', 
-  'AUDIO_API_URL', 'AUDIO_TOKEN_ID', 'AUDIO_TOKEN_SECRET'
+  'AUDIO_API_URL', 'AUDIO_TOKEN_ID', 'AUDIO_TOKEN_SECRET',
+  'CODE_API_URL', 'CODE_TOKEN_ID', 'CODE_TOKEN_SECRET'
 ];
 
 for (const envVar of requiredEnvVars) {
@@ -200,6 +201,13 @@ const getApiConfig = (fileType) => {
         url: process.env.AUDIO_API_URL,
         tokenId: process.env.AUDIO_TOKEN_ID,
         tokenSecret: process.env.AUDIO_TOKEN_SECRET,
+        timeout: config.requestTimeout
+      };
+    case 'code':
+      return {
+        url: process.env.CODE_API_URL,
+        tokenId: process.env.CODE_TOKEN_ID,
+        tokenSecret: process.env.CODE_TOKEN_SECRET,
         timeout: config.requestTimeout
       };
     default:
@@ -388,21 +396,21 @@ app.post('/api/plagiarism/check', upload.single('file'), async (req, res) => {
       lines: fileContent.split('\n').length
     });
 
-    // Code plagiarism API endpoint (you'll need to add this to your env)
-    const codeApiUrl = 'https://binshilin63--code-deepfake-detector-deepfakecodeapi-predict.modal.run';
-    
+    // Get code API configuration from environment variables
+    const apiConfig = getApiConfig('code');
+
     const formData = new FormData();
     formData.append('code', fileContent);
 
-    console.log(`📡 Sending request to Code Plagiarism API: ${codeApiUrl}`);
+    console.log(`📡 Sending request to Code Plagiarism API: ${apiConfig.url}`);
 
-    const response = await axios.post(codeApiUrl, formData, {
+    const response = await axios.post(apiConfig.url, formData, {
       headers: {
-        'Modal-Key': process.env.VIDEO_TOKEN_ID, // Using video creds for now
-        'Modal-Secret': process.env.VIDEO_TOKEN_SECRET,
+        'Modal-Key': apiConfig.tokenId,
+        'Modal-Secret': apiConfig.tokenSecret,
         ...formData.getHeaders()
       },
-      timeout: config.requestTimeout,
+      timeout: apiConfig.timeout,
       maxContentLength: config.maxFileSize,
       maxBodyLength: config.maxFileSize
     });
@@ -505,6 +513,8 @@ const server = app.listen(config.port, () => {
   console.log(`📊 Health check: http://localhost:${config.port}/health`);
   console.log(`🔍 Deepfake API: http://localhost:${config.port}/api/analyze`);
   console.log(`💻 Code Plagiarism API: http://localhost:${config.port}/api/plagiarism/check`);
+  console.log(`📝 Text Plagiarism API: http://localhost:${config.port}/api/plagiarism/check/text`);
+  console.log(`📁 Code File Plagiarism API: http://localhost:${config.port}/api/plagiarism/check/code`);
   console.log(`⚡ Max file size: ${config.maxFileSize / (1024 * 1024)}MB`);
   console.log(`🔒 Rate limit: ${config.rateLimit.maxRequests} requests per ${config.rateLimit.windowMinutes} minutes`);
 });
