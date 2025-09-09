@@ -72,32 +72,36 @@ if (config.nodeEnv === 'production') {
 
 app.set('trust proxy', 1)
 
-// CORS configuration (UPDATED SECTION)
 app.use(cors({
   origin: function (origin, callback) {
-    // Check if the environment is not production and the origin is a localhost URL
     const isDevelopment = config.nodeEnv !== 'production';
     const isLocalhost = origin && origin.startsWith('http://localhost:');
 
-    // Allow requests with no origin (e.g., Postman, mobile apps)
+    // Log all incoming origins (debug)
+    console.log("🌍 Incoming request origin:", origin);
+
+    // Allow requests with no origin (e.g., Postman, curl)
     if (!origin) {
-        return callback(null, true);
-    }
-    
-    // Allow if origin is in the configured list
-    if (config.allowedOrigins && config.allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    // Allow if in development and the request is from localhost
-    if (isDevelopment && isLocalhost) {
-        console.log(`✅ Allowed development request from: ${origin}`);
+    // If ALLOWED_ORIGINS is set in env, check against it
+    if (config.allowedOrigins && config.allowedOrigins.length > 0) {
+      if (config.allowedOrigins.includes(origin)) {
+        console.log(`✅ Allowed by ALLOWED_ORIGINS: ${origin}`);
         return callback(null, true);
+      }
     }
 
-    // Otherwise, block the request
+    // In development, allow localhost
+    if (isDevelopment && isLocalhost) {
+      console.log(`✅ Allowed development request from: ${origin}`);
+      return callback(null, true);
+    }
+
+    // Otherwise, block
     console.warn(`🚫 Blocked CORS request from: ${origin}`);
-    return callback(new Error('Not allowed by CORS'));
+    return callback(new Error(`Not allowed by CORS: ${origin}`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
