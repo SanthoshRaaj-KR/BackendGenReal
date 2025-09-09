@@ -1,3 +1,4 @@
+// services/auth-service/src/routes/authRoutes.js - UPDATED FOR VERCEL URL LIMITS
 const express = require('express');
 const passport = require('passport');
 const authController = require('../controllers/authController');
@@ -60,7 +61,7 @@ router.post('/verify-password-reset-otp', authLimiter, debugMiddleware, verifyOt
 router.post('/reset-password-with-otp', authLimiter, debugMiddleware, resetPasswordWithOtpValidation, authController.resetPasswordWithOTP);
 
 // ============================================
-// GOOGLE OAUTH ROUTES - FIXED WITH REDIRECT HANDLING
+// GOOGLE OAUTH ROUTES - FIXED FOR VERCEL URL LIMITS
 // ============================================
 
 // Google OAuth initiation - store redirect URL and frontend URL in session
@@ -79,7 +80,7 @@ router.get('/google', (req, res, next) => {
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
 });
 
-// Google OAuth callback - handle redirect with stored session data
+// Google OAuth callback - UPDATED TO USE TOKEN ONLY (NO USER DATA IN URL)
 router.get('/google/callback',
   passport.authenticate('google', { 
     failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
@@ -94,7 +95,7 @@ router.get('/google/callback',
         return res.redirect(`${frontendUrl}/login?error=oauth_failed&redirect=${encodeURIComponent(redirectUrl)}`);
       }
 
-      // Generate tokens (you'll need to implement this in authController)
+      // Generate tokens
       const deviceInfo = require('../utils/helpers').getDeviceInfo(req);
       const authService = require('../services/authService');
       const { accessToken } = authService.generateTokens(user);
@@ -107,7 +108,7 @@ router.get('/google/callback',
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax', // Changed from 'strict' to 'lax' for cross-origin redirects
         maxAge: 7 * 24 * 60 * 60 * 1000,
       });
 
@@ -119,10 +120,10 @@ router.get('/google/callback',
       if (req.session?.oauthRedirect) delete req.session.oauthRedirect;
       if (req.session?.frontendUrl) delete req.session.frontendUrl;
 
-      // Redirect with all parameters
-      const callbackUrl = `${frontendUrl}/auth/callback?token=${accessToken}&userId=${user._id}&redirect=${encodeURIComponent(redirectUrl)}`;
+      // FIXED: Only pass token and redirect URL - user data will be fetched via API
+      const callbackUrl = `${frontendUrl}/auth/callback?token=${accessToken}&redirect=${encodeURIComponent(redirectUrl)}`;
       
-      console.log('Google OAuth success, redirecting to:', callbackUrl);
+      console.log('Google OAuth success, redirecting to (shortened):', callbackUrl);
       res.redirect(callbackUrl);
       
     } catch (error) {
@@ -152,13 +153,26 @@ router.get('/validate', authenticate, (req, res) => {
       role: req.user.role,
       credits: req.user.credits,
       isVerified: req.user.isVerified,
-      plan: req.user.plan
+      plan: req.user.plan,
+      profilePicture: req.user.profilePicture
     }
   });
 });
 
 // Get user profile
 router.get('/profile', authenticate, authController.getProfile);
+
+// Get user credits (for credit checking)
+router.get('/credits', authenticate, (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      credits: req.user.credits,
+      totalUsed: req.user.totalCreditsUsed || 0,
+      plan: req.user.plan
+    }
+  });
+});
 
 // ============================================
 // TEST/DEBUG ROUTES

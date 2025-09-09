@@ -1,3 +1,4 @@
+// services/auth-service/src/controllers/authController.js - UPDATED TO USE TOKEN ONLY
 const authService = require('../services/authService');
 const { getDeviceInfo } = require('../utils/helpers');
 const { logActivity } = require('../utils/loger');
@@ -87,14 +88,15 @@ class AuthController {
     }
   }
 
-  // ================== GOOGLE CALLBACK - FIXED ==================
+  // ================== GOOGLE CALLBACK - FIXED FOR VERCEL URL LIMITS ==================
   async googleCallback(req, res) {
     try {
       const user = req.user;
       if (!user) {
         // Get redirect URL from session or fallback to default
         const redirectUrl = req.session?.oauthRedirect || '/';
-        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_failed&redirect=${encodeURIComponent(redirectUrl)}`);
+        const frontendUrl = req.session?.frontendUrl || process.env.FRONTEND_URL;
+        return res.redirect(`${frontendUrl}/login?error=oauth_failed&redirect=${encodeURIComponent(redirectUrl)}`);
       }
 
       const deviceInfo = getDeviceInfo(req);
@@ -111,21 +113,26 @@ class AuthController {
 
       // Get the original redirect URL from session (stored during OAuth initiation)
       const redirectUrl = req.session?.oauthRedirect || '/';
+      const frontendUrl = req.session?.frontendUrl || process.env.FRONTEND_URL;
       
       // Clear the redirect from session
       if (req.session?.oauthRedirect) {
         delete req.session.oauthRedirect;
       }
+      if (req.session?.frontendUrl) {
+        delete req.session.frontendUrl;
+      }
 
-      // Redirect with token, userId, and the original redirect parameter
-      const callbackUrl = `${process.env.FRONTEND_URL}/auth/callback?token=${accessToken}&userId=${user._id}&redirect=${encodeURIComponent(redirectUrl)}`;
+      // FIXED: Only pass token and redirect URL - user data will be fetched via token validation
+      const callbackUrl = `${frontendUrl}/auth/callback?token=${accessToken}&redirect=${encodeURIComponent(redirectUrl)}`;
       
-      console.log('Google OAuth callback redirect URL:', callbackUrl); // Debug log
+      console.log('Google OAuth callback redirect URL (shortened):', callbackUrl);
       res.redirect(callbackUrl);
     } catch (error) {
       console.error('Google OAuth error:', error);
       const redirectUrl = req.session?.oauthRedirect || '/';
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error&redirect=${encodeURIComponent(redirectUrl)}`);
+      const frontendUrl = req.session?.frontendUrl || process.env.FRONTEND_URL;
+      res.redirect(`${frontendUrl}/login?error=oauth_error&redirect=${encodeURIComponent(redirectUrl)}`);
     }
   }
 
@@ -134,13 +141,17 @@ class AuthController {
     try {
       // Store the redirect URL in session before initiating OAuth
       const redirectUrl = req.query.redirect || '/';
+      const frontendUrl = req.query.frontend || process.env.FRONTEND_URL;
+      
       req.session.oauthRedirect = redirectUrl;
+      req.session.frontendUrl = frontendUrl;
       
       // Continue with passport Google authentication
       next();
     } catch (error) {
       console.error('Google OAuth initiation error:', error);
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
+      const frontendUrl = req.query.frontend || process.env.FRONTEND_URL;
+      res.redirect(`${frontendUrl}/login?error=oauth_error`);
     }
   }
 
