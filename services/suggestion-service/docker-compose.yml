@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  contact-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: genreal-contact-service
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - MONGODB_URI=mongodb://mongo:27017/genreal_ai
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
+    depends_on:
+      - mongo
+    networks:
+      - genreal-network
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  mongo:
+    image: mongo:6.0
+    container_name: genreal-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=genreal_admin_2024
+      - MONGO_INITDB_DATABASE=genreal_ai
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
+    networks:
+      - genreal-network
+    command: mongod --auth
+
+  mongo-express:
+    image: mongo-express:1.0.0
+    container_name: genreal-mongo-express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=genreal_admin_2024
+      - ME_CONFIG_MONGODB_URL=mongodb://admin:genreal_admin_2024@mongo:27017/
+      - ME_CONFIG_BASICAUTH_USERNAME=genreal
+      - ME_CONFIG_BASICAUTH_PASSWORD=genreal123
+    depends_on:
+      - mongo
+    networks:
+      - genreal-network
+
+networks:
+  genreal-network:
+    driver: bridge
+    name: genreal-network
+
+volumes:
+  mongo_data:
+    driver: local
