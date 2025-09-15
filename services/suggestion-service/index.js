@@ -7,6 +7,7 @@ require('dotenv').config();
 
 const connectDB = require('./config/db');
 const Contact = require('./models/contact');
+const Feedback = require('./models/Feedback');
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -34,7 +35,7 @@ const limiter = rateLimit({
 
 app.use('/api/', limiter);
 
-// Validation middleware
+// Validation middleware for Contact
 const contactValidation = [
   body('name')
     .trim()
@@ -58,6 +59,7 @@ const contactValidation = [
     .withMessage('Message must be between 10 and 1000 characters')
 ];
 
+// Validation middleware for Feedback
 const feedbackValidation = [
   body('email')
     .isEmail()
@@ -70,7 +72,15 @@ const feedbackValidation = [
   body('feedback')
     .trim()
     .isLength({ min: 10, max: 1000 })
-    .withMessage('Feedback must be between 10 and 1000 characters')
+    .withMessage('Feedback must be between 10 and 1000 characters'),
+  body('rating')
+    .optional({ nullable: true, checkFalsy: false })
+    .isInt({ min: 1, max: 5 })
+    .withMessage('Rating must be between 1 and 5'),
+  body('category')
+    .optional()
+    .isIn(['bug', 'feature_request', 'improvement', 'compliment', 'complaint', 'other'])
+    .withMessage('Invalid category')
 ];
 
 // Error handling middleware
@@ -89,9 +99,17 @@ const handleValidationErrors = (req, res, next) => {
 // Routes
 app.get('/', (req, res) => {
   res.json({
-    message: 'Contact Service API',
+    message: 'Contact & Feedback Service API',
     version: '1.0.0',
-    status: 'running'
+    status: 'running',
+    endpoints: {
+      contact: '/api/contact',
+      feedback: '/api/feedback',
+      admin: {
+        contacts: '/api/admin/contacts',
+        feedback: '/api/admin/feedback'
+      }
+    }
   });
 });
 
@@ -100,7 +118,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    service: 'contact-service',
+    service: 'contact-feedback-service',
     port: PORT
   });
 });
@@ -111,7 +129,6 @@ app.post('/api/contact', contactValidation, handleValidationErrors, async (req, 
     const { name, email, phone, subject, message } = req.body;
 
     const contactData = {
-      type: 'contact',
       name: name.trim(),
       email: email.toLowerCase().trim(),
       phone: phone ? phone.trim() : null,
@@ -125,7 +142,7 @@ app.post('/api/contact', contactValidation, handleValidationErrors, async (req, 
     const contact = new Contact(contactData);
     await contact.save();
 
-    console.log(`New contact submission: ${email} - ${subject}`);
+    console.log(`📧 New contact submission: ${email} - ${subject}`);
 
     res.status(201).json({
       success: true,
@@ -137,7 +154,7 @@ app.post('/api/contact', contactValidation, handleValidationErrors, async (req, 
     });
 
   } catch (error) {
-    console.error('Contact form submission error:', error);
+    console.error('❌ Contact form submission error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to submit contact form',
@@ -146,36 +163,68 @@ app.post('/api/contact', contactValidation, handleValidationErrors, async (req, 
   }
 });
 
-const Feedback = require('./models/Feedback');
-
+// Feedback form submission
 app.post('/api/feedback', feedbackValidation, handleValidationErrors, async (req, res) => {
   try {
-    const { email, model, feedback } = req.body;
+    console.log('💭 Raw feedback request body:', JSON.stringify(req.body, null, 2));
+    console.log('💭 Request headers:', req.headers);
+    
+    const { email, model, feedback, rating, category } = req.body;
 
-    const feedbackEntry = new Feedback({
+    const feedbackData = {
       email: email.toLowerCase().trim(),
       model: model.trim(),
       feedback: feedback.trim(),
       submittedAt: new Date(),
       ipAddress: req.ip || req.connection.remoteAddress,
       userAgent: req.get('User-Agent')
-    });
+    };
 
-    await feedbackEntry.save();
+    // Only add rating if provided and not empty
+    if (rating !== undefined && rating !== null && rating !== '') {
+      feedbackData.rating = parseInt(rating);
+    }
 
-    console.log(`New feedback submission: ${email} - ${model}`);
+    // Only add category if provided and not empty, otherwise let default handle it
+    if (category && category.trim() !== '') {
+      feedbackData.category = category.trim();
+    }
+
+    console.log('💭 Processed feedback data:', JSON.stringify(feedbackData, null, 2));
+
+    const feedbackEntry = new Feedback(feedbackData);
+    console.log('💭 Feedback entry before save:', JSON.stringify(feedbackEntry.toObject(), null, 2));
+    
+    const savedFeedback = await feedbackEntry.save();
+    console.log('💭 Feedback saved successfully with ID:', savedFeedback._id);
 
     res.status(201).json({
       success: true,
       message: 'Feedback submitted successfully',
       data: {
-        id: feedbackEntry._id,
-        submittedAt: feedbackEntry.submittedAt
+        id: savedFeedback._id,
+        submittedAt: savedFeedback.submittedAt,
+        category: savedFeedback.category,
+        priority: savedFeedback.priority
       }
     });
 
   } catch (error) {
-    console.error('Feedback submission error:', error);
+    console.error('❌ Feedback submission error:', error);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    if (error.name === 'ValidationError') {
+      console.error('❌ Validation errors:', error.errors);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: Object.keys(error.errors).map(key => ({
+          field: key,
+          message: error.errors[key].message
+        }))
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to submit feedback',
@@ -184,11 +233,135 @@ app.post('/api/feedback', feedbackValidation, handleValidationErrors, async (req
   }
 });
 
+// Admin routes - Get all contacts
+app.get('/api/admin/contacts', async (req, res) => {
+  try {
+    const { status, priority, page = 1, limit = 20 } = req.query;
+    
+    let query = {};
+    if (status) query.status = status;
+    if (priority) query.priority = priority;
 
+    const contacts = await Contact.find(query)
+      .sort({ submittedAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Contact.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: contacts,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        limit
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching contacts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch contacts'
+    });
+  }
+});
+
+// Admin routes - Get all feedback
+app.get('/api/admin/feedback', async (req, res) => {
+  try {
+    const { model, category, status, priority, page = 1, limit = 20 } = req.query;
+    
+    let query = {};
+    if (model) query.model = model;
+    if (category) query.category = category;
+    if (status) query.status = status;
+    if (priority) query.priority = priority;
+
+    const feedback = await Feedback.find(query)
+      .sort({ submittedAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Feedback.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: feedback,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        limit
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching feedback:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch feedback'
+    });
+  }
+});
+
+// Admin routes - Get feedback statistics
+app.get('/api/admin/feedback/stats', async (req, res) => {
+  try {
+    const { model } = req.query;
+    let matchQuery = {};
+    if (model) matchQuery.model = model;
+
+    const stats = await Feedback.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          avgRating: { $avg: '$rating' },
+          categories: {
+            $push: '$category'
+          },
+          priorities: {
+            $push: '$priority'
+          }
+        }
+      }
+    ]);
+
+    const categoryStats = await Feedback.aggregate([
+      { $match: matchQuery },
+      { $group: { _id: '$category', count: { $sum: 1 } } }
+    ]);
+
+    const modelStats = await Feedback.aggregate([
+      { $group: { _id: '$model', count: { $sum: 1 }, avgRating: { $avg: '$rating' } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        overview: stats[0] || { total: 0, avgRating: 0 },
+        byCategory: categoryStats,
+        byModel: modelStats
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching feedback stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch feedback statistics'
+    });
+  }
+});
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  console.error('❌ Unhandled error:', err);
   res.status(500).json({
     success: false,
     message: 'Something went wrong!',
@@ -206,8 +379,12 @@ app.use('*', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Contact service running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🚀 Contact & Feedback service running on port ${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📊 Database: MongoDB`);
+  console.log(`🔗 Available endpoints:`);
+  console.log(`   - POST /api/contact (Contact submissions)`);
+  console.log(`   - POST /api/feedback (Feedback submissions)`);
 });
 
 // Graceful shutdown
