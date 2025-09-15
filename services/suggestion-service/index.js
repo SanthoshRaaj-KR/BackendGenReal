@@ -7,7 +7,7 @@ require('dotenv').config();
 
 const connectDB = require('./config/db');
 const Contact = require('./models/contact');
-const Feedback = require('./models/Feedback');
+const Feedback = require('./models/feedback');
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -42,6 +42,7 @@ const contactValidation = [
     .isLength({ min: 2, max: 50 })
     .withMessage('Name must be between 2 and 50 characters'),
   body('email')
+    .optional()
     .isEmail()
     .normalizeEmail()
     .withMessage('Please provide a valid email'),
@@ -62,6 +63,7 @@ const contactValidation = [
 // Validation middleware for Feedback
 const feedbackValidation = [
   body('email')
+    .optional() // <-- THIS IS THE REQUIRED CHANGE
     .isEmail()
     .normalizeEmail()
     .withMessage('Please provide a valid email'),
@@ -172,7 +174,7 @@ app.post('/api/feedback', feedbackValidation, handleValidationErrors, async (req
     const { email, model, feedback, rating, category } = req.body;
 
     const feedbackData = {
-      email: email.toLowerCase().trim(),
+      email: email ? email.toLowerCase().trim() : null,
       model: model.trim(),
       feedback: feedback.trim(),
       submittedAt: new Date(),
