@@ -16,7 +16,6 @@ pids
 *.pid
 *.seed
 *.pid.lock
-package-lock.json
 # Coverage and test output
 /coverage
 /.nyc_output
